@@ -37,6 +37,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -57,6 +58,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.aifigurepaint.app.AppViewModel
 import com.aifigurepaint.app.ai.AiMixSuggestion
+import com.aifigurepaint.app.ai.AiModelMode
+import com.aifigurepaint.app.ai.AiTaskType
 import com.aifigurepaint.app.data.MixRecipeEntity
 import com.aifigurepaint.app.data.PaintEntity
 import com.aifigurepaint.app.data.ProjectEntity
@@ -69,14 +72,14 @@ import com.aifigurepaint.app.data.StockLevel
 @Composable
 internal fun AiSettingsDialog(
     configured: Boolean,
-    currentModel: String,
+    currentMode: AiModelMode,
     onDismiss: () -> Unit,
-    onSave: (String, String) -> Unit,
+    onSave: (String, AiModelMode) -> Unit,
     onClear: () -> Unit,
     onDataManagement: () -> Unit,
 ) {
     var key by remember { mutableStateOf("") }
-    var model by remember(currentModel) { mutableStateOf(currentModel) }
+    var mode by remember(currentMode) { mutableStateOf(currentMode) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("AI 연결 설정") },
@@ -95,15 +98,19 @@ internal fun AiSettingsDialog(
                     visualTransformation = PasswordVisualTransformation(),
                     singleLine = true,
                 )
-                OutlinedTextField(
-                    model,
-                    { model = it },
-                    Modifier.fillMaxWidth(),
-                    label = { Text("사용 모델") },
-                    supportingText = { Text("v${com.aifigurepaint.app.BuildConfig.VERSION_NAME} AI 기능은 GPT-5.6을 사용합니다.") },
-                    readOnly = true,
-                    singleLine = true,
-                )
+                Text("AI 모델", style = MaterialTheme.typography.titleSmall)
+                AiModelMode.entries.forEach { option ->
+                    Row(
+                        Modifier.fillMaxWidth().clickable { mode = option }.padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = mode == option, onClick = { mode = option })
+                        Column(Modifier.weight(1f)) {
+                            Text(option.title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                            Text(option.description, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
                 Text(
                     if (configured) "연결 정보가 설정되어 있습니다." else "키가 없어도 RGB/HEX 추출과 로컬 색상 후보는 작동합니다.",
                     style = MaterialTheme.typography.labelMedium,
@@ -116,7 +123,7 @@ internal fun AiSettingsDialog(
             }
         },
         confirmButton = {
-            Button(onClick = { onSave(key, model); onDismiss() }, enabled = configured || key.isNotBlank()) { Text("저장") }
+            Button(onClick = { onSave(key, mode); onDismiss() }) { Text("저장") }
         },
         dismissButton = {
             Row {
@@ -448,6 +455,7 @@ private fun AiMixPanel(
 ) {
     val state by viewModel.aiState.collectAsState()
     val configured by viewModel.aiConfigured.collectAsState()
+    val selectedMode by viewModel.aiModelMode.collectAsState()
     var prompt by remember(targetHex, currentRecipe?.id) { mutableStateOf(if (targetHex != null) "$targetHex 색상을 보유 도료로 만들어줘" else "") }
     var ownedOnly by remember { mutableStateOf(true) }
     var brand by remember { mutableStateOf<String?>(null) }
@@ -461,6 +469,16 @@ private fun AiMixPanel(
             Column(Modifier.weight(1f)) {
                 Text("AI Assistant", style = MaterialTheme.typography.titleLarge)
                 Text(if (configured) "보유 도료를 이해하는 조색 보조" else "로컬 분석 사용 중 · AI 설정 가능", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                val plannedTask = when {
+                    targetHex != null -> AiTaskType.PHOTO_COLOR_MIX
+                    currentRecipe != null -> AiTaskType.RECIPE_ADJUST
+                    else -> AiTaskType.COLOR_MIX
+                }
+                Text(
+                    "${selectedMode.title} · ${viewModel.aiModelLabel(plannedTask)} 사용 예정",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
             }
             TextButton(onClick = onSettings) { Text("설정") }
         }
@@ -698,7 +716,14 @@ private fun WideProjectDetail(
                 enabled = question.isNotBlank() && !aiState.loading,
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("AI에게 묻기") }
-            aiState.advice?.let { OutlinedCard { Text(it, Modifier.padding(12.dp), style = MaterialTheme.typography.bodyMedium) } }
+            aiState.advice?.let {
+                OutlinedCard {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        aiState.activeModelLabel?.let { label -> Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary) }
+                        Text(it, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            }
             aiState.notice?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
         }
     }

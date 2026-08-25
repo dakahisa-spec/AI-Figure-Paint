@@ -52,6 +52,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import com.aifigurepaint.app.AppViewModel
+import com.aifigurepaint.app.ai.AiTaskType
 import com.aifigurepaint.app.data.ProjectEntity
 import com.aifigurepaint.app.data.ProjectStatus
 import java.io.File
@@ -67,7 +68,7 @@ internal fun ProjectScanScreen(
     val context = LocalContext.current
     val scanState by viewModel.projectScanState.collectAsState()
     val configured by viewModel.aiConfigured.collectAsState()
-    val model by viewModel.aiModel.collectAsState()
+    val modelMode by viewModel.aiModelMode.collectAsState()
     var selectedUri by remember { mutableStateOf<Uri?>(null) }
     var cameraUri by remember { mutableStateOf<Uri?>(null) }
     var projectName by remember { mutableStateOf("") }
@@ -291,7 +292,7 @@ private fun ProjectCapturePanel(
             }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    if (configured) "AI 연결됨 · $model" else "AI 키 미설정 · 직접 입력 가능",
+                    if (configured) "AI 연결됨 · ${viewModel.aiModelLabel(AiTaskType.SIMPLE_CHAT)}" else "AI 키 미설정 · ${modelMode.title} · 직접 입력 가능",
                     modifier = Modifier.weight(1f),
                     style = MaterialTheme.typography.labelSmall,
                     color = if (configured) StudioTeal else MaterialTheme.colorScheme.onSurfaceVariant,

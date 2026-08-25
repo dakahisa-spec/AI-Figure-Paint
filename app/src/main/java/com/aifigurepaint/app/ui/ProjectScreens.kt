@@ -331,7 +331,12 @@ internal fun ProjectDetailScreen(
                         enabled = aiQuestion.isNotBlank() && !aiState.loading,
                         modifier = Modifier.fillMaxWidth(),
                     ) { Text("AI에게 묻기") }
-                    aiState.advice?.let { EmptyCard(it) }
+                    aiState.advice?.let { advice ->
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            aiState.activeModelLabel?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary) }
+                            EmptyCard(advice)
+                        }
+                    }
                     aiState.notice?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
                 }
             }

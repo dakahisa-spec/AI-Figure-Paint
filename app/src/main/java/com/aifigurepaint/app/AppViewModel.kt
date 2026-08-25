@@ -11,6 +11,8 @@ import androidx.lifecycle.viewModelScope
 import androidx.room.withTransaction
 import com.aifigurepaint.app.ai.AiMixRequest
 import com.aifigurepaint.app.ai.AiMixSuggestion
+import com.aifigurepaint.app.ai.AiModelMode
+import com.aifigurepaint.app.ai.AiTaskType
 import com.aifigurepaint.app.ai.AiPaintDraft
 import com.aifigurepaint.app.ai.AiProjectDraft
 import com.aifigurepaint.app.ai.AiSettingsStore
@@ -59,6 +61,7 @@ data class AiUiState(
     val suggestion: AiMixSuggestion? = null,
     val advice: String? = null,
     val notice: String? = null,
+    val activeModelLabel: String? = null,
 )
 
 data class PaintScanUiState(
@@ -115,8 +118,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val projectScanState = _projectScanState.asStateFlow()
     private val _aiConfigured = MutableStateFlow(aiSettings.hasApiKey())
     val aiConfigured = _aiConfigured.asStateFlow()
-    private val _aiModel = MutableStateFlow(aiSettings.model())
-    val aiModel = _aiModel.asStateFlow()
+    private val _aiModelMode = MutableStateFlow(aiSettings.mode())
+    val aiModelMode = _aiModelMode.asStateFlow()
     private val _testAdjustmentState = MutableStateFlow(TestAdjustmentUiState())
     val testAdjustmentState = _testAdjustmentState.asStateFlow()
     private val _excelState = MutableStateFlow(ExcelUiState())
@@ -289,7 +292,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val key = aiSettings.readApiKey()
                 val suggestion = if (key.isBlank()) withContext(Dispatchers.Default) { LocalColorEngine.suggest(request) }
-                else OpenAiService(key, aiSettings.model()).suggestMix(request)
+                else OpenAiService(key, aiSettings.selection(AiTaskType.TEST_PIECE_ADJUST)).suggestMix(request)
                 _testAdjustmentState.value = TestAdjustmentUiState(
                     testResultId = result.id,
                     suggestion = suggestion,
@@ -429,12 +432,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun saveAiSettings(apiKey: String, model: String) {
-        aiSettings.save(apiKey, model)
+    fun saveAiSettings(apiKey: String, mode: AiModelMode) {
+        aiSettings.save(apiKey, mode)
         _aiConfigured.value = aiSettings.hasApiKey()
-        _aiModel.value = aiSettings.model()
+        _aiModelMode.value = aiSettings.mode()
         _message.value = "AI 연결 설정을 안전하게 저장했습니다."
     }
+
+    fun aiModelLabel(taskType: AiTaskType, highestQuality: Boolean = false): String =
+        aiSettings.selection(taskType, highestQuality).resultLabel
 
     fun clearAiSettings() {
         aiSettings.clear()
@@ -467,7 +473,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         notice = "GPT-5.6 연결 설정이 없어 로컬 대표색만 추출했습니다.",
                     )
                 } else {
-                    val result = OpenAiService(apiKey, aiSettings.model()).analyzePaintPhoto(prepared.dataUrl)
+                    val result = OpenAiService(apiKey, aiSettings.selection(AiTaskType.PAINT_SCAN)).analyzePaintPhoto(prepared.dataUrl)
                     _paintScanState.value = PaintScanUiState(draft = result)
                 }
             } catch (_: CancellationException) {
@@ -508,7 +514,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         notice = "GPT-5.6 연결 설정이 없어 촬영일만 입력했습니다. 나머지 정보는 직접 확인해주세요.",
                     )
                 } else {
-                    val result = OpenAiService(apiKey, aiSettings.model())
+                    val result = OpenAiService(apiKey, aiSettings.selection(AiTaskType.SIMPLE_CHAT))
                         .analyzeProjectPhoto(prepared.dataUrl, captureDate)
                     _projectScanState.value = ProjectScanUiState(draft = result)
                 }
@@ -537,7 +543,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         aiJob?.cancel()
         aiJob = viewModelScope.launch {
-            _aiState.value = AiUiState(loading = true)
+            val taskType = when {
+                !targetHex.isNullOrBlank() -> AiTaskType.PHOTO_COLOR_MIX
+                !currentRecipe.isNullOrBlank() -> AiTaskType.RECIPE_ADJUST
+                else -> AiTaskType.COLOR_MIX
+            }
+            val highestQuality = requestsHighestQuality(prompt)
+            val selection = aiSettings.selection(taskType, highestQuality)
+            _aiState.value = AiUiState(loading = true, activeModelLabel = selection.resultLabel)
             val recentFeedback = recipeId?.let { id ->
                 testResultsDao.recentForRecipe(id, 5).joinToString("\n") { row ->
                     val labels = row.evaluations.split('|').filter { it.isNotBlank() }.joinToString(", ") { TestEvaluation.label(it) }
@@ -561,8 +574,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         notice = "AI 연결을 사용할 수 없습니다. 로컬 색상 분석 결과를 표시합니다.",
                     )
                 } else {
-                    val result = OpenAiService(apiKey, aiSettings.model()).suggestMix(request)
-                    _aiState.value = AiUiState(suggestion = result)
+                    val result = OpenAiService(apiKey, selection).suggestMix(request)
+                    _aiState.value = AiUiState(suggestion = result, activeModelLabel = selection.resultLabel)
                 }
             } catch (_: CancellationException) {
                 throw CancellationException()
@@ -581,15 +594,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (question.isBlank()) return
         aiJob?.cancel()
         aiJob = viewModelScope.launch {
-            _aiState.value = AiUiState(loading = true)
+            val simpleQuestions = setOf("진행 요약", "다음 작업", "색 추천")
+            val taskType = if (question.trim() in simpleQuestions) AiTaskType.SIMPLE_CHAT else AiTaskType.PAINTING_ADVICE
+            val selection = aiSettings.selection(taskType, requestsHighestQuality(question))
+            _aiState.value = AiUiState(loading = true, activeModelLabel = selection.resultLabel)
             val apiKey = aiSettings.readApiKey()
             if (apiKey.isBlank()) {
                 _aiState.value = AiUiState(notice = "AI 연결을 사용할 수 없습니다. 설정에서 API 키를 등록해주세요.")
                 return@launch
             }
             try {
-                val advice = OpenAiService(apiKey, aiSettings.model()).advise(question, context)
-                _aiState.value = AiUiState(advice = advice)
+                val advice = OpenAiService(apiKey, selection).advise(question, context)
+                _aiState.value = AiUiState(advice = advice, activeModelLabel = selection.resultLabel)
             } catch (_: CancellationException) {
                 throw CancellationException()
             } catch (error: Throwable) {
@@ -731,4 +747,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun parseHex(value: String): Int = runCatching {
         (0xFF000000L or value.removePrefix("#").takeLast(6).toLong(16)).toInt()
     }.getOrDefault(0xFF808080.toInt())
+
+    private fun requestsHighestQuality(text: String): Boolean {
+        val normalized = text.lowercase()
+        return listOf("최고 품질", "정밀", "복잡", "여러 조건", "비교 분석", "highest quality")
+            .any { it in normalized }
+    }
 }

@@ -73,7 +73,7 @@ fun AiFigurePaintApp(viewModel: AppViewModel) {
     val recipeCards by viewModel.recipeCards.collectAsState()
     val message by viewModel.message.collectAsState()
     val aiConfigured by viewModel.aiConfigured.collectAsState()
-    val aiModel by viewModel.aiModel.collectAsState()
+    val aiModelMode by viewModel.aiModelMode.collectAsState()
     val snackbarHost = remember { SnackbarHostState() }
     var tab by remember { mutableStateOf(RootTab.HOME) }
     var detail by remember { mutableStateOf<DetailPage?>(null) }
@@ -266,7 +266,7 @@ fun AiFigurePaintApp(viewModel: AppViewModel) {
     if (showAiSettings) {
         AiSettingsDialog(
             configured = aiConfigured,
-            currentModel = aiModel,
+            currentMode = aiModelMode,
             onDismiss = { showAiSettings = false },
             onSave = viewModel::saveAiSettings,
             onClear = viewModel::clearAiSettings,

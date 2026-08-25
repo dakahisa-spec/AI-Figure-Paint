@@ -78,8 +78,10 @@ interface AiService {
 
 class OpenAiService(
     private val apiKey: String,
-    private val model: String = AiSettingsStore.DEFAULT_MODEL,
+    private val selection: AiModelSelection,
 ) : AiService {
+    private val model: String = selection.modelId
+
     override suspend fun suggestMix(request: AiMixRequest): AiMixSuggestion {
         val available = request.paints
             .filter { !request.ownedOnly || it.owned }
@@ -166,7 +168,7 @@ class OpenAiService(
             targetHex = normalizeHex(json.optString("target_hex", request.targetHex ?: "#808080")),
             components = components.map { it.copy(percent = it.percent / sum * 100.0) },
             explanation = json.optString("explanation", "보유 도료를 기준으로 계산한 예상 조색입니다."),
-            source = "OpenAI · $model",
+            source = selection.resultLabel,
             originalPrompt = request.prompt,
         )
     }
@@ -470,12 +472,14 @@ class AiSettingsStore(context: Context) {
     private val prefs = context.getSharedPreferences("ai_provider_settings", Context.MODE_PRIVATE)
 
     fun hasApiKey(): Boolean = prefs.contains(KEY_VALUE)
-    fun model(): String = DEFAULT_MODEL
+    fun mode(): AiModelMode = AiModelMode.fromStored(prefs.getString(KEY_MODEL_MODE, null))
+    fun selection(taskType: AiTaskType, highestQuality: Boolean = false): AiModelSelection =
+        AiModelRouter.resolve(taskType, mode(), highestQuality)
     fun maskedKey(): String = if (hasApiKey()) "••••••••${readApiKey().takeLast(4)}" else "미설정"
 
-    fun save(apiKey: String, model: String) {
+    fun save(apiKey: String, mode: AiModelMode) {
         if (apiKey.isNotBlank()) prefs.edit().putString(KEY_VALUE, encrypt(apiKey.trim())).apply()
-        prefs.edit().putString(KEY_MODEL, DEFAULT_MODEL).apply()
+        prefs.edit().putString(KEY_MODEL_MODE, mode.name).apply()
     }
 
     fun clear() = prefs.edit().remove(KEY_VALUE).apply()
@@ -513,10 +517,9 @@ class AiSettingsStore(context: Context) {
     }.getOrDefault("")
 
     companion object {
-        const val DEFAULT_MODEL = "gpt-5.6"
         private const val KEY_ALIAS = "ai_figure_paint_api_key"
         private const val KEY_VALUE = "encrypted_api_key"
-        private const val KEY_MODEL = "model"
+        private const val KEY_MODEL_MODE = "model_mode"
     }
 }
 

@@ -638,6 +638,7 @@ private fun TestAdjustmentComparison(
                 }
             }
             Text(suggestion.explanation, style = MaterialTheme.typography.bodySmall)
+            Text(suggestion.source, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
             Text("예상 조색 · 실제 결과는 안료, 희석비, 바탕색과 도막 두께에 따라 달라질 수 있습니다.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             notice?.let { Text(it, style = MaterialTheme.typography.labelSmall) }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
