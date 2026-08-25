@@ -62,6 +62,7 @@ private sealed interface DetailPage {
     data class RecipeDetail(val id: Long) : DetailPage
     data class AiMix(val targetHex: String? = null, val recipeId: Long? = null) : DetailPage
     data class PhotoAnalyzer(val recipeId: Long? = null) : DetailPage
+    data object DataManagement : DetailPage
 }
 
 @Composable
@@ -169,8 +170,8 @@ fun AiFigurePaintApp(viewModel: AppViewModel) {
                         recipe = recipe,
                         project = projects.firstOrNull { it.id == recipe.projectId },
                         viewModel = viewModel,
-                        onBack = { detail = null },
-                        onEdit = { detail = DetailPage.RecipeEditor(recipe.id) },
+                        onBack = { viewModel.clearTestAdjustment(); detail = null },
+                        onEdit = { viewModel.clearTestAdjustment(); detail = DetailPage.RecipeEditor(recipe.id) },
                         onAiAdjust = { detail = DetailPage.AiMix(recipeId = recipe.id) },
                     )
                 }
@@ -188,6 +189,10 @@ fun AiFigurePaintApp(viewModel: AppViewModel) {
                 is DetailPage.PhotoAnalyzer -> PhotoColorAnalyzerScreen(
                     onBack = { detail = DetailPage.AiMix(recipeId = page.recipeId) },
                     onUseColor = { detail = DetailPage.AiMix(it, page.recipeId) },
+                )
+                DetailPage.DataManagement -> DataManagementScreen(
+                    viewModel = viewModel,
+                    onBack = { viewModel.clearExcelState(); detail = null },
                 )
                 null -> when (tab) {
                     RootTab.HOME -> HomeScreen(
@@ -265,6 +270,7 @@ fun AiFigurePaintApp(viewModel: AppViewModel) {
             onDismiss = { showAiSettings = false },
             onSave = viewModel::saveAiSettings,
             onClear = viewModel::clearAiSettings,
+            onDataManagement = { detail = DetailPage.DataManagement },
         )
     }
 }

@@ -103,6 +103,34 @@ data class RecipeVersionEntity(
 )
 
 @Entity(
+    tableName = "test_results",
+    foreignKeys = [
+        ForeignKey(
+            entity = MixRecipeEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["recipeId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+        ForeignKey(
+            entity = RecipeVersionEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["recipeVersionId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+    indices = [Index("recipeId"), Index("recipeVersionId")],
+)
+data class TestResultEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val recipeId: Long,
+    val recipeVersionId: Long,
+    val testDate: Long,
+    val evaluations: String = "",
+    val memo: String = "",
+    val createdAt: Long = System.currentTimeMillis(),
+)
+
+@Entity(
     tableName = "project_timeline_entries",
     foreignKeys = [
         ForeignKey(
@@ -259,6 +287,34 @@ object ProjectStatus {
 object PhotoOwner {
     const val PROJECT = "PROJECT"
     const val RECIPE = "RECIPE"
+    const val TEST_RESULT = "TEST_RESULT"
+}
+
+object TestEvaluation {
+    const val MATCH = "MATCH"
+    const val TOO_LIGHT = "TOO_LIGHT"
+    const val TOO_DARK = "TOO_DARK"
+    const val TOO_RED = "TOO_RED"
+    const val TOO_YELLOW = "TOO_YELLOW"
+    const val TOO_BLUE = "TOO_BLUE"
+    const val TOO_PURPLE = "TOO_PURPLE"
+    const val TOO_SATURATED = "TOO_SATURATED"
+    const val TOO_DESATURATED = "TOO_DESATURATED"
+
+    val entries = listOf(MATCH, TOO_LIGHT, TOO_DARK, TOO_RED, TOO_YELLOW, TOO_BLUE, TOO_PURPLE, TOO_SATURATED, TOO_DESATURATED)
+
+    fun label(value: String): String = when (value) {
+        MATCH -> "딱 맞음"
+        TOO_LIGHT -> "너무 밝음"
+        TOO_DARK -> "너무 어두움"
+        TOO_RED -> "너무 붉음"
+        TOO_YELLOW -> "너무 노랑"
+        TOO_BLUE -> "너무 파랑"
+        TOO_PURPLE -> "너무 보라"
+        TOO_SATURATED -> "채도 높음"
+        TOO_DESATURATED -> "채도 낮음"
+        else -> value
+    }
 }
 
 object ProjectStage {

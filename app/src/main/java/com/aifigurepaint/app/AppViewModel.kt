@@ -17,6 +17,9 @@ import com.aifigurepaint.app.ai.AiSettingsStore
 import com.aifigurepaint.app.ai.LocalColorEngine
 import com.aifigurepaint.app.ai.OpenAiService
 import com.aifigurepaint.app.data.AppDatabase
+import com.aifigurepaint.app.data.DuplicatePolicy
+import com.aifigurepaint.app.data.ExcelBackupService
+import com.aifigurepaint.app.data.ExcelImportPreview
 import com.aifigurepaint.app.data.MixRecipeEntity
 import com.aifigurepaint.app.data.MixRecipeItemEntity
 import com.aifigurepaint.app.data.PaintEntity
@@ -30,6 +33,8 @@ import com.aifigurepaint.app.data.ProjectTimelineEntryEntity
 import com.aifigurepaint.app.data.RecipeCardRow
 import com.aifigurepaint.app.data.RecipeItemRow
 import com.aifigurepaint.app.data.RecipeVersionEntity
+import com.aifigurepaint.app.data.TestEvaluation
+import com.aifigurepaint.app.data.TestResultEntity
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -68,6 +73,19 @@ data class ProjectScanUiState(
     val notice: String? = null,
 )
 
+data class TestAdjustmentUiState(
+    val loading: Boolean = false,
+    val testResultId: Long? = null,
+    val suggestion: AiMixSuggestion? = null,
+    val notice: String? = null,
+)
+
+data class ExcelUiState(
+    val loading: Boolean = false,
+    val preview: ExcelImportPreview? = null,
+    val notice: String? = null,
+)
+
 class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val db = AppDatabase.get(application)
     private val paintsDao = db.paintDao()
@@ -76,6 +94,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val photosDao = db.photoDao()
     private val versionsDao = db.versionDao()
     private val timelineDao = db.timelineDao()
+    private val testResultsDao = db.testResultDao()
+    private val excel = ExcelBackupService(application, db)
     private val aiSettings = AiSettingsStore(application)
     private var aiJob: Job? = null
 
@@ -97,6 +117,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val aiConfigured = _aiConfigured.asStateFlow()
     private val _aiModel = MutableStateFlow(aiSettings.model())
     val aiModel = _aiModel.asStateFlow()
+    private val _testAdjustmentState = MutableStateFlow(TestAdjustmentUiState())
+    val testAdjustmentState = _testAdjustmentState.asStateFlow()
+    private val _excelState = MutableStateFlow(ExcelUiState())
+    val excelState = _excelState.asStateFlow()
 
     fun clearMessage() { _message.value = null }
     fun clearAiResult() { _aiState.value = AiUiState() }
@@ -198,7 +222,115 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun paintRecipes(paintId: Long): Flow<List<RecipeCardRow>> = recipesDao.observeCardsForPaint(paintId)
     fun photos(ownerType: String, ownerId: Long): Flow<List<PhotoEntity>> = photosDao.observe(ownerType, ownerId)
     fun recipeVersions(recipeId: Long): Flow<List<RecipeVersionEntity>> = versionsDao.observeForRecipe(recipeId)
+    fun testResults(recipeId: Long): Flow<List<TestResultEntity>> = testResultsDao.observeForRecipe(recipeId)
     fun projectTimeline(projectId: Long): Flow<List<ProjectTimelineEntryEntity>> = timelineDao.observeForProject(projectId)
+
+    fun saveTestResult(
+        result: TestResultEntity,
+        photoUris: List<String>,
+        onSaved: () -> Unit = {},
+    ) = viewModelScope.launch {
+        runCatching {
+            require(result.recipeVersionId > 0) { "테스트에 사용한 레시피 버전을 선택해주세요." }
+            var savedId = 0L
+            db.withTransaction {
+                savedId = testResultsDao.insert(result.copy(createdAt = System.currentTimeMillis()))
+                replacePhotos(PhotoOwner.TEST_RESULT, savedId, photoUris)
+            }
+        }.onSuccess {
+            _message.value = "테스트 결과를 기록했습니다."
+            onSaved()
+        }.onFailure { _message.value = it.message ?: "테스트 결과를 저장하지 못했습니다." }
+    }
+
+    fun deleteTestResult(result: TestResultEntity) = viewModelScope.launch {
+        runCatching {
+            db.withTransaction {
+                photosDao.deleteForOwner(PhotoOwner.TEST_RESULT, result.id)
+                testResultsDao.delete(result)
+            }
+        }.onSuccess { _message.value = "테스트 기록을 삭제했습니다." }
+            .onFailure { _message.value = "테스트 기록을 삭제하지 못했습니다." }
+    }
+
+    fun requestTestAdjustment(
+        recipe: MixRecipeEntity,
+        version: RecipeVersionEntity,
+        result: TestResultEntity,
+    ) {
+        aiJob?.cancel()
+        aiJob = viewModelScope.launch {
+            _testAdjustmentState.value = TestAdjustmentUiState(loading = true, testResultId = result.id)
+            val recent = testResultsDao.recentForRecipe(recipe.id, 5)
+            val feedback = result.evaluations.split('|').filter { it.isNotBlank() }.joinToString(", ") { TestEvaluation.label(it) }
+            val history = recent.joinToString("\n") { row ->
+                val labels = row.evaluations.split('|').filter { it.isNotBlank() }.joinToString(", ") { TestEvaluation.label(it) }
+                "- $labels ${row.memo}".trim()
+            }
+            val versionItems = runCatching { JSONArray(version.ingredientSnapshot) }.getOrElse { JSONArray() }
+            val paintMap = paints.value.associateBy { it.id }
+            val current = buildString {
+                append("v${version.versionNumber} ${version.label}; 총량 ${version.snapshotTotalMl}ml; ")
+                for (index in 0 until versionItems.length()) {
+                    val item = versionItems.optJSONObject(index) ?: continue
+                    val paintId = item.optLong("paintId")
+                    val amount = item.optDouble("amountMl")
+                    val percent = if (version.snapshotTotalMl > 0) amount / version.snapshotTotalMl * 100 else 0.0
+                    append("${paintMap[paintId]?.name ?: paintId} ${"%.2f".format(percent)}%, ")
+                }
+            }
+            val request = AiMixRequest(
+                prompt = "테스트 피스 평가($feedback)와 메모(${result.memo.ifBlank { "없음" }})를 반영해 비율을 보정해줘. 최근 관련 기록:\n$history",
+                paints = paints.value,
+                ownedOnly = true,
+                currentRecipe = current,
+                targetHex = "#%06X".format(recipe.resultColorValue and 0xFFFFFF),
+            )
+            try {
+                val key = aiSettings.readApiKey()
+                val suggestion = if (key.isBlank()) withContext(Dispatchers.Default) { LocalColorEngine.suggest(request) }
+                else OpenAiService(key, aiSettings.model()).suggestMix(request)
+                _testAdjustmentState.value = TestAdjustmentUiState(
+                    testResultId = result.id,
+                    suggestion = suggestion,
+                    notice = if (key.isBlank()) "AI 연결을 사용할 수 없어 로컬 후보를 표시합니다." else null,
+                )
+            } catch (_: CancellationException) {
+                throw CancellationException()
+            } catch (error: Throwable) {
+                _testAdjustmentState.value = TestAdjustmentUiState(testResultId = result.id, notice = "AI 보정안을 만들지 못했습니다: ${error.message.orEmpty().take(100)}")
+            }
+        }
+    }
+
+    fun clearTestAdjustment() { aiJob?.cancel(); _testAdjustmentState.value = TestAdjustmentUiState() }
+
+    fun exportExcel(uri: Uri) = viewModelScope.launch {
+        _excelState.value = ExcelUiState(loading = true)
+        runCatching { withContext(Dispatchers.IO) { excel.exportTo(uri) } }
+            .onSuccess { summary -> _excelState.value = ExcelUiState(notice = "Excel 내보내기 완료 · 도료 ${summary.paints}, 레시피 ${summary.recipes}, 프로젝트 ${summary.projects}, 테스트 ${summary.testResults}") }
+            .onFailure { _excelState.value = ExcelUiState(notice = "Excel 내보내기 실패: ${it.message.orEmpty().take(120)}") }
+    }
+
+    fun previewExcel(uri: Uri) = viewModelScope.launch {
+        _excelState.value = ExcelUiState(loading = true)
+        runCatching { withContext(Dispatchers.IO) { excel.preview(uri) } }
+            .onSuccess { _excelState.value = ExcelUiState(preview = it) }
+            .onFailure { _excelState.value = ExcelUiState(notice = "Excel 파일을 검증하지 못했습니다: ${it.message.orEmpty().take(120)}") }
+    }
+
+    fun importExcel(policy: DuplicatePolicy, onImported: () -> Unit = {}) = viewModelScope.launch {
+        val preview = _excelState.value.preview ?: return@launch
+        _excelState.value = _excelState.value.copy(loading = true)
+        runCatching { withContext(Dispatchers.IO) { excel.importData(preview, policy) } }
+            .onSuccess { summary ->
+                _excelState.value = ExcelUiState(notice = "가져오기 완료 · 도료 ${summary.paints}, 레시피 ${summary.recipes}, 프로젝트 ${summary.projects}, 테스트 ${summary.testResults}")
+                onImported()
+            }
+            .onFailure { error -> _excelState.value = ExcelUiState(preview = preview, notice = "가져오기 실패: ${error.message.orEmpty().take(120)}") }
+    }
+
+    fun clearExcelState() { _excelState.value = ExcelUiState() }
 
     fun setProjectRecipes(projectId: Long, recipeIds: List<Long>) = viewModelScope.launch {
         runCatching {
@@ -397,6 +529,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         brand: String?,
         currentRecipe: String? = null,
         targetHex: String? = null,
+        recipeId: Long? = null,
     ) {
         if (prompt.isBlank() && targetHex.isNullOrBlank()) {
             _aiState.value = AiUiState(notice = "원하는 색을 설명하거나 사진 색상을 선택해주세요.")
@@ -405,12 +538,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         aiJob?.cancel()
         aiJob = viewModelScope.launch {
             _aiState.value = AiUiState(loading = true)
+            val recentFeedback = recipeId?.let { id ->
+                testResultsDao.recentForRecipe(id, 5).joinToString("\n") { row ->
+                    val labels = row.evaluations.split('|').filter { it.isNotBlank() }.joinToString(", ") { TestEvaluation.label(it) }
+                    "테스트: $labels ${row.memo}".trim()
+                }.takeIf { it.isNotBlank() }
+            }
             val request = AiMixRequest(
                 prompt = prompt.ifBlank { "사진의 $targetHex 색상" },
                 paints = paints.value,
                 ownedOnly = ownedOnly,
                 brand = brand,
-                currentRecipe = currentRecipe,
+                currentRecipe = listOfNotNull(currentRecipe, recentFeedback).joinToString("\n").takeIf { it.isNotBlank() },
                 targetHex = targetHex,
             )
             try {

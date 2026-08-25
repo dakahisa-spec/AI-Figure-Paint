@@ -73,6 +73,7 @@ internal fun AiSettingsDialog(
     onDismiss: () -> Unit,
     onSave: (String, String) -> Unit,
     onClear: () -> Unit,
+    onDataManagement: () -> Unit,
 ) {
     var key by remember { mutableStateOf("") }
     var model by remember(currentModel) { mutableStateOf(currentModel) }
@@ -108,6 +109,10 @@ internal fun AiSettingsDialog(
                     style = MaterialTheme.typography.labelMedium,
                     color = if (configured) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                OutlinedButton(
+                    onClick = { onDismiss(); onDataManagement() },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("데이터 관리 · Excel") }
             }
         },
         confirmButton = {
@@ -479,7 +484,7 @@ private fun AiMixPanel(
         }
         Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
             Button(
-                onClick = { viewModel.requestMix(prompt, ownedOnly, brand, currentRecipeText, targetHex) },
+                onClick = { viewModel.requestMix(prompt, ownedOnly, brand, currentRecipeText, targetHex, currentRecipe?.id) },
                 enabled = !state.loading && (prompt.isNotBlank() || targetHex != null),
                 modifier = Modifier.weight(1f),
             ) { Text(if (currentRecipe == null) "추천 만들기" else "AI로 조정") }

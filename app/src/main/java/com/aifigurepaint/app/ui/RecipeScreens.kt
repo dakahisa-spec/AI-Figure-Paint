@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -61,7 +62,13 @@ import com.aifigurepaint.app.data.PaintEntity
 import com.aifigurepaint.app.data.PhotoOwner
 import com.aifigurepaint.app.data.ProjectEntity
 import com.aifigurepaint.app.data.RecipeCardRow
+import com.aifigurepaint.app.data.RecipeItemRow
+import com.aifigurepaint.app.data.RecipeVersionEntity
 import com.aifigurepaint.app.data.StockLevel
+import com.aifigurepaint.app.data.TestEvaluation
+import com.aifigurepaint.app.data.TestResultEntity
+import java.time.LocalDate
+import java.time.ZoneId
 import kotlin.math.abs
 
 private data class IngredientDraft(val key: Long, val paintId: Long, val amount: String)
@@ -344,8 +351,11 @@ internal fun RecipeDetailScreen(
     val storedPhotos by viewModel.photos(PhotoOwner.RECIPE, recipe.id).collectAsState(initial = emptyList())
     val photoUris = storedPhotos.map { it.uri }.ifEmpty { listOfNotNull(recipe.photoUri) }
     val versions by viewModel.recipeVersions(recipe.id).collectAsState(initial = emptyList())
+    val testResults by viewModel.testResults(recipe.id).collectAsState(initial = emptyList())
+    val adjustment by viewModel.testAdjustmentState.collectAsState()
     var targetText by remember(recipe.id) { mutableStateOf(formatMl(recipe.baseTotalMl)) }
     var deleteConfirm by remember { mutableStateOf(false) }
+    var showTestEditor by remember { mutableStateOf(false) }
     val target = targetText.toDoubleOrNull()?.takeIf { it > 0 } ?: recipe.baseTotalMl
     val scale = if (recipe.baseTotalMl > 0) target / recipe.baseTotalMl else 1.0
 
@@ -431,6 +441,42 @@ internal fun RecipeDetailScreen(
                             }
                         }
                     }
+                    SectionTitle("테스트 기록", "실제 테스트 피스 결과와 AI 보정")
+                    Button(
+                        onClick = { showTestEditor = true },
+                        enabled = versions.isNotEmpty(),
+                        modifier = Modifier.fillMaxWidth().height(42.dp),
+                    ) { Text("테스트 결과 기록") }
+                    if (versions.isEmpty()) {
+                        Text("먼저 레시피를 저장해 버전을 만든 뒤 기록할 수 있습니다.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    if (testResults.isEmpty()) EmptyCard("아직 테스트 피스 기록이 없습니다.")
+                    testResults.forEach { result ->
+                        TestResultCard(
+                            result = result,
+                            version = versions.firstOrNull { it.id == result.recipeVersionId },
+                            viewModel = viewModel,
+                            onAdjust = {
+                                versions.firstOrNull { it.id == result.recipeVersionId }?.let { version ->
+                                    viewModel.requestTestAdjustment(recipe, version, result)
+                                }
+                            },
+                        )
+                    }
+                    adjustment.suggestion?.takeIf { adjustment.testResultId in testResults.map { it.id } }?.let { suggestion ->
+                        TestAdjustmentComparison(
+                            currentItems = items,
+                            suggestion = suggestion,
+                            loading = adjustment.loading,
+                            notice = adjustment.notice,
+                            onSave = { viewModel.saveAiSuggestion(suggestion, recipeId = recipe.id) { viewModel.clearTestAdjustment() } },
+                            onDismiss = viewModel::clearTestAdjustment,
+                        )
+                    } ?: if (adjustment.testResultId in testResults.map { it.id } && (adjustment.loading || adjustment.notice != null)) {
+                        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .5f))) {
+                            Text(if (adjustment.loading) "AI 보정안을 계산하고 있습니다…" else adjustment.notice.orEmpty(), Modifier.padding(12.dp))
+                        }
+                    }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(onClick = onEdit, modifier = Modifier.weight(1f).height(42.dp)) { Text("수정") }
                         OutlinedButton(onClick = onAiAdjust, modifier = Modifier.weight(1f).height(42.dp)) { Text("AI 조정") }
@@ -459,5 +505,144 @@ internal fun RecipeDetailScreen(
             confirmButton = { TextButton(onClick = { viewModel.deleteRecipe(recipe, onBack) }) { Text("삭제", color = MaterialTheme.colorScheme.error) } },
             dismissButton = { TextButton(onClick = { deleteConfirm = false }) { Text("취소") } },
         )
+    }
+    if (showTestEditor) {
+        TestResultEditorDialog(
+            recipeId = recipe.id,
+            versions = versions,
+            viewModel = viewModel,
+            onDismiss = { showTestEditor = false },
+        )
+    }
+}
+
+@Composable
+private fun TestResultEditorDialog(
+    recipeId: Long,
+    versions: List<RecipeVersionEntity>,
+    viewModel: AppViewModel,
+    onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+    var selectedVersion by remember { mutableStateOf(versions.firstOrNull()) }
+    var versionMenu by remember { mutableStateOf(false) }
+    var dateText by remember { mutableStateOf(LocalDate.now().toString()) }
+    var memo by remember { mutableStateOf("") }
+    val evaluations = remember { mutableStateListOf<String>() }
+    val photos = remember { mutableStateListOf<String>() }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null && photos.size < 3) copyPhotoToAppStorage(context, uri)?.let { if (it !in photos) photos += it }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("테스트 결과 기록") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Box {
+                    OutlinedButton(onClick = { versionMenu = true }, modifier = Modifier.fillMaxWidth()) {
+                        Text(selectedVersion?.let { "v${it.versionNumber} · ${it.label}" } ?: "레시피 버전 선택")
+                    }
+                    DropdownMenu(versionMenu, { versionMenu = false }) {
+                        versions.forEach { version ->
+                            DropdownMenuItem(
+                                text = { Text("v${version.versionNumber} · ${version.label}") },
+                                onClick = { selectedVersion = version; versionMenu = false },
+                            )
+                        }
+                    }
+                }
+                OutlinedTextField(dateText, { dateText = it }, Modifier.fillMaxWidth(), label = { Text("작업 날짜 (YYYY-MM-DD)") }, singleLine = true)
+                Text("결과 평가 · 복수 선택", style = MaterialTheme.typography.titleSmall)
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(TestEvaluation.entries) { value ->
+                        FilterChip(
+                            selected = value in evaluations,
+                            onClick = { if (value in evaluations) evaluations.remove(value) else evaluations.add(value) },
+                            label = { Text(TestEvaluation.label(value)) },
+                        )
+                    }
+                }
+                PhotoStrip(photos, itemSize = 76.dp)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { picker.launch(arrayOf("image/*")) }, enabled = photos.size < 3, modifier = Modifier.weight(1f)) { Text("사진 추가 ${photos.size}/3") }
+                    if (photos.isNotEmpty()) TextButton(onClick = { photos.removeLast() }) { Text("삭제") }
+                }
+                OutlinedTextField(memo, { memo = it }, Modifier.fillMaxWidth().height(92.dp), label = { Text("사용자 메모 (선택)") })
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val date = runCatching { LocalDate.parse(dateText).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli() }.getOrDefault(System.currentTimeMillis())
+                    val version = selectedVersion ?: return@Button
+                    viewModel.saveTestResult(
+                        TestResultEntity(recipeId = recipeId, recipeVersionId = version.id, testDate = date, evaluations = evaluations.joinToString("|"), memo = memo.trim()),
+                        photos.toList(),
+                        onDismiss,
+                    )
+                },
+                enabled = selectedVersion != null && runCatching { LocalDate.parse(dateText) }.isSuccess,
+            ) { Text("기록 저장") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("취소") } },
+    )
+}
+
+@Composable
+private fun TestResultCard(
+    result: TestResultEntity,
+    version: RecipeVersionEntity?,
+    viewModel: AppViewModel,
+    onAdjust: () -> Unit,
+) {
+    val photos by viewModel.photos(PhotoOwner.TEST_RESULT, result.id).collectAsState(initial = emptyList())
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .4f)), shape = RoundedCornerShape(10.dp)) {
+        Column(Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("${formatDateTime(result.testDate)} · ${version?.let { "v${it.versionNumber}" } ?: "버전 정보 없음"}", style = MaterialTheme.typography.titleSmall)
+                    val labels = result.evaluations.split('|').filter { it.isNotBlank() }.joinToString(" · ") { TestEvaluation.label(it) }
+                    if (labels.isNotBlank()) Text(labels, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                }
+                TextButton(onClick = onAdjust, enabled = version != null) { Text("AI 보정 요청") }
+            }
+            PhotoStrip(photos.map { it.uri }, itemSize = 68.dp)
+            if (result.memo.isNotBlank()) Text(result.memo, style = MaterialTheme.typography.bodySmall)
+            TextButton(onClick = { viewModel.deleteTestResult(result) }, modifier = Modifier.align(Alignment.End)) { Text("기록 삭제", color = MaterialTheme.colorScheme.error) }
+        }
+    }
+}
+
+@Composable
+private fun TestAdjustmentComparison(
+    currentItems: List<RecipeItemRow>,
+    suggestion: com.aifigurepaint.app.ai.AiMixSuggestion,
+    loading: Boolean,
+    notice: String?,
+    onSave: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val total = currentItems.sumOf { it.baseAmountMl }.takeIf { it > 0 } ?: 1.0
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer), shape = RoundedCornerShape(10.dp)) {
+        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("현재 레시피 vs AI 보정안", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(Modifier.weight(1f)) {
+                    Text("현재 레시피", style = MaterialTheme.typography.labelLarge)
+                    currentItems.forEach { Text("${it.productCode ?: it.paintName} ${"%.1f".format(it.baseAmountMl / total * 100)}%", style = MaterialTheme.typography.bodySmall) }
+                }
+                Column(Modifier.weight(1f)) {
+                    Text("AI 보정안", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                    suggestion.components.forEach { Text("${it.productCode ?: it.paintName} ${"%.1f".format(it.percent)}%", style = MaterialTheme.typography.bodySmall) }
+                }
+            }
+            Text(suggestion.explanation, style = MaterialTheme.typography.bodySmall)
+            Text("예상 조색 · 실제 결과는 안료, 희석비, 바탕색과 도막 두께에 따라 달라질 수 있습니다.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            notice?.let { Text(it, style = MaterialTheme.typography.labelSmall) }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = onDismiss) { Text("닫기") }
+                Button(onClick = onSave, enabled = !loading) { Text("새 버전으로 저장") }
+            }
+        }
     }
 }

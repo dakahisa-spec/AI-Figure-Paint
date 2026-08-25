@@ -22,6 +22,8 @@ interface PaintDao {
     @Insert suspend fun insert(paint: PaintEntity): Long
     @Update suspend fun update(paint: PaintEntity)
     @Delete suspend fun delete(paint: PaintEntity)
+    @Query("SELECT * FROM paints ORDER BY id")
+    suspend fun allOnce(): List<PaintEntity>
     @Query("UPDATE paints SET lastUsedAt = :usedAt, updatedAt = :usedAt WHERE id IN (:paintIds)")
     suspend fun markUsed(paintIds: List<Long>, usedAt: Long)
 }
@@ -34,6 +36,8 @@ interface ProjectDao {
     @Insert suspend fun insert(project: ProjectEntity): Long
     @Update suspend fun update(project: ProjectEntity)
     @Delete suspend fun delete(project: ProjectEntity)
+    @Query("SELECT * FROM projects ORDER BY id")
+    suspend fun allOnce(): List<ProjectEntity>
 }
 
 @Dao
@@ -170,6 +174,12 @@ interface RecipeDao {
     suspend fun deleteRecipeRefs(recipeId: Long)
     @Query("UPDATE mix_recipes SET projectId = NULL WHERE projectId = :projectId")
     suspend fun clearLegacyProjectLinks(projectId: Long)
+    @Query("SELECT * FROM mix_recipes ORDER BY id")
+    suspend fun allRecipesOnce(): List<MixRecipeEntity>
+    @Query("SELECT * FROM mix_recipe_items ORDER BY recipeId, sortOrder, id")
+    suspend fun allItemsOnce(): List<MixRecipeItemEntity>
+    @Query("SELECT * FROM project_recipe_refs ORDER BY projectId, sortOrder, recipeId")
+    suspend fun allProjectRefsOnce(): List<ProjectRecipeCrossRef>
 }
 
 @Dao
@@ -182,6 +192,8 @@ interface PhotoDao {
 
     @Query("DELETE FROM photos WHERE ownerType = :ownerType AND ownerId = :ownerId")
     suspend fun deleteForOwner(ownerType: String, ownerId: Long)
+    @Query("SELECT * FROM photos ORDER BY ownerType, ownerId, sortOrder, id")
+    suspend fun allOnce(): List<PhotoEntity>
 }
 
 @Dao
@@ -193,6 +205,23 @@ interface VersionDao {
     suspend fun nextVersionNumber(recipeId: Long): Int
 
     @Insert suspend fun insert(version: RecipeVersionEntity): Long
+    @Query("SELECT * FROM recipe_versions ORDER BY recipeId, versionNumber, id")
+    suspend fun allOnce(): List<RecipeVersionEntity>
+}
+
+@Dao
+interface TestResultDao {
+    @Query("SELECT * FROM test_results WHERE recipeId = :recipeId ORDER BY testDate DESC, createdAt DESC")
+    fun observeForRecipe(recipeId: Long): Flow<List<TestResultEntity>>
+
+    @Query("SELECT * FROM test_results WHERE recipeId = :recipeId ORDER BY testDate DESC, createdAt DESC LIMIT :limit")
+    suspend fun recentForRecipe(recipeId: Long, limit: Int): List<TestResultEntity>
+
+    @Query("SELECT * FROM test_results ORDER BY recipeId, testDate, id")
+    suspend fun allOnce(): List<TestResultEntity>
+
+    @Insert suspend fun insert(result: TestResultEntity): Long
+    @Delete suspend fun delete(result: TestResultEntity)
 }
 
 @Dao
@@ -213,9 +242,10 @@ interface TimelineDao {
         ProjectRecipeCrossRef::class,
         PhotoEntity::class,
         RecipeVersionEntity::class,
+        TestResultEntity::class,
         ProjectTimelineEntryEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -224,6 +254,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun recipeDao(): RecipeDao
     abstract fun photoDao(): PhotoDao
     abstract fun versionDao(): VersionDao
+    abstract fun testResultDao(): TestResultDao
     abstract fun timelineDao(): TimelineDao
 
     companion object {
@@ -234,7 +265,7 @@ abstract class AppDatabase : RoomDatabase() {
                 context.applicationContext,
                 AppDatabase::class.java,
                 "ai_figure_paint.db",
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).addCallback(object : Callback() {
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).addCallback(object : Callback() {
                 override fun onCreate(db: SupportSQLiteDatabase) {
                     super.onCreate(db)
                     val now = System.currentTimeMillis()
@@ -362,6 +393,28 @@ abstract class AppDatabase : RoomDatabase() {
                 )
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_project_timeline_entries_projectId ON project_timeline_entries(projectId)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_project_timeline_entries_recipeId ON project_timeline_entries(recipeId)")
+            }
+        }
+
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS test_results (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        recipeId INTEGER NOT NULL,
+                        recipeVersionId INTEGER NOT NULL,
+                        testDate INTEGER NOT NULL,
+                        evaluations TEXT NOT NULL,
+                        memo TEXT NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        FOREIGN KEY(recipeId) REFERENCES mix_recipes(id) ON UPDATE NO ACTION ON DELETE CASCADE,
+                        FOREIGN KEY(recipeVersionId) REFERENCES recipe_versions(id) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_test_results_recipeId ON test_results(recipeId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_test_results_recipeVersionId ON test_results(recipeVersionId)")
             }
         }
     }
