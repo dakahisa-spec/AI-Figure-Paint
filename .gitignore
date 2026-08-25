@@ -1,0 +1,12 @@
+.gradle/
+.work-tools/
+local.properties
+build/
+app/build/
+*.iml
+.idea/
+upgrade-signing/
+*.keystore
+*.jks
+*.properties.local
+
