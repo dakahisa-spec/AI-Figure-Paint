@@ -49,6 +49,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import com.aifigurepaint.app.AppViewModel
+import com.aifigurepaint.app.ai.AiModelRouter
 import com.aifigurepaint.app.ai.AiTaskType
 import com.aifigurepaint.app.data.PaintEntity
 import com.aifigurepaint.app.data.StockLevel
@@ -65,6 +66,7 @@ internal fun PaintScanScreen(
     val scanState by viewModel.paintScanState.collectAsState()
     val configured by viewModel.aiConfigured.collectAsState()
     val modelMode by viewModel.aiModelMode.collectAsState()
+    val model = AiModelRouter.resolve(AiTaskType.PAINT_SCAN, modelMode).resultLabel
     var selectedUri by remember { mutableStateOf<Uri?>(null) }
     var cameraUri by remember { mutableStateOf<Uri?>(null) }
     var brand by remember { mutableStateOf("") }
@@ -304,7 +306,7 @@ private fun PaintCapturePanel(
             }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    if (configured) "AI 연결됨 · ${viewModel.aiModelLabel(AiTaskType.PAINT_SCAN)}" else "AI 키 미설정 · ${modelMode.title} · 로컬 대표색 사용 가능",
+                    if (configured) "AI 연결됨 · $model" else "AI 키 미설정 · $model 사용 예정",
                     modifier = Modifier.weight(1f),
                     style = MaterialTheme.typography.labelSmall,
                     color = if (configured) StudioTeal else MaterialTheme.colorScheme.onSurfaceVariant,
