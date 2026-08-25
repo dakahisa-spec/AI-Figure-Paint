@@ -463,16 +463,17 @@ internal fun RecipeDetailScreen(
                             },
                         )
                     }
-                    adjustment.suggestion?.takeIf { adjustment.testResultId in testResults.map { it.id } }?.let { suggestion ->
+                    val visibleSuggestion = adjustment.suggestion?.takeIf { adjustment.testResultId in testResults.map { it.id } }
+                    if (visibleSuggestion != null) {
                         TestAdjustmentComparison(
                             currentItems = items,
-                            suggestion = suggestion,
+                            suggestion = visibleSuggestion,
                             loading = adjustment.loading,
                             notice = adjustment.notice,
-                            onSave = { viewModel.saveAiSuggestion(suggestion, recipeId = recipe.id) { viewModel.clearTestAdjustment() } },
+                            onSave = { viewModel.saveAiSuggestion(visibleSuggestion, recipeId = recipe.id) { viewModel.clearTestAdjustment() } },
                             onDismiss = viewModel::clearTestAdjustment,
                         )
-                    } ?: if (adjustment.testResultId in testResults.map { it.id } && (adjustment.loading || adjustment.notice != null)) {
+                    } else if (adjustment.testResultId in testResults.map { it.id } && (adjustment.loading || adjustment.notice != null)) {
                         Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .5f))) {
                             Text(if (adjustment.loading) "AI 보정안을 계산하고 있습니다…" else adjustment.notice.orEmpty(), Modifier.padding(12.dp))
                         }
