@@ -276,12 +276,14 @@ internal fun ProjectDetailScreen(
     val storedPhotos by viewModel.photos(PhotoOwner.PROJECT, project.id).collectAsState(initial = emptyList())
     val timeline by viewModel.projectTimeline(project.id).collectAsState(initial = emptyList())
     val comparisons by viewModel.partComparisons(project.id).collectAsState(initial = emptyList())
+    val originalPlans by viewModel.originalColorPlans(project.id).collectAsState(initial = emptyList())
     val comparisonState by viewModel.partsComparisonState.collectAsState()
     val aiState by viewModel.aiState.collectAsState()
     val photoUris = storedPhotos.map { it.uri }.ifEmpty { listOfNotNull(project.photoUri) }
     var showLinks by remember { mutableStateOf(false) }
     var showTimelineEntry by remember { mutableStateOf(false) }
     var showPartsComparison by remember { mutableStateOf(false) }
+    var showOriginalColorMatch by remember { mutableStateOf(false) }
     var aiQuestion by remember(project.id) { mutableStateOf("") }
 
     Scaffold(topBar = { EditorHeader("프로젝트 상세", onBack) }) { padding ->
@@ -333,6 +335,11 @@ internal fun ProjectDetailScreen(
                             }
                         }
                     }
+                    SectionTitle("원작 컬러", if (originalPlans.isEmpty()) "사진 → 공식 자료 → 보유 도료 조색" else "${originalPlans.first().identifiedName} · ${originalPlans.size}개 플랜")
+                    Button(
+                        onClick = { viewModel.clearOriginalColorMatch(); showOriginalColorMatch = true },
+                        modifier = Modifier.fillMaxWidth().height(40.dp),
+                    ) { Text(if (originalPlans.isEmpty()) "AI 원작 컬러 매칭" else "원작 컬러 플랜 보기 / 새 분석") }
                     SectionTitle(
                         "부품 비교",
                         if (project.projectType == ProjectType.MECHANIC) "도색 전후 꽂이판 누락 의심 확인" else "교체 파츠·소품 비교에도 사용 가능",
@@ -415,6 +422,14 @@ internal fun ProjectDetailScreen(
             state = comparisonState,
             viewModel = viewModel,
             onDismiss = { viewModel.clearPartsComparison(); showPartsComparison = false },
+        )
+    }
+    if (showOriginalColorMatch) {
+        OriginalColorMatchDialog(
+            project = project,
+            recipes = allRecipes,
+            viewModel = viewModel,
+            onDismiss = { viewModel.clearOriginalColorMatch(); showOriginalColorMatch = false },
         )
     }
 }

@@ -14,9 +14,13 @@ import com.aifigurepaint.app.ai.AiMixSuggestion
 import com.aifigurepaint.app.ai.AiModelMode
 import com.aifigurepaint.app.ai.AiTaskType
 import com.aifigurepaint.app.ai.AiPaintDraft
+import com.aifigurepaint.app.ai.AiOfficialReference
+import com.aifigurepaint.app.ai.AiOriginalColorPlanDraft
+import com.aifigurepaint.app.ai.AiOriginalColorPart
 import com.aifigurepaint.app.ai.AiPartsComparisonDraft
 import com.aifigurepaint.app.ai.AiProjectDraft
 import com.aifigurepaint.app.ai.AiProductCodeResult
+import com.aifigurepaint.app.ai.AiSubjectCandidate
 import com.aifigurepaint.app.ai.AiSettingsStore
 import com.aifigurepaint.app.ai.LocalColorEngine
 import com.aifigurepaint.app.ai.OpenAiService
@@ -28,6 +32,7 @@ import com.aifigurepaint.app.data.MixRecipeEntity
 import com.aifigurepaint.app.data.MixRecipeItemEntity
 import com.aifigurepaint.app.data.PaintEntity
 import com.aifigurepaint.app.data.PartComparisonEntity
+import com.aifigurepaint.app.data.OriginalColorPlanEntity
 import com.aifigurepaint.app.data.PhotoEntity
 import com.aifigurepaint.app.data.PhotoOwner
 import com.aifigurepaint.app.data.ProjectEntity
@@ -106,6 +111,16 @@ data class ProductCodeSearchUiState(
     val activeModelLabel: String? = null,
 )
 
+data class OriginalColorMatchUiState(
+    val loading: Boolean = false,
+    val stage: String = "PHOTO",
+    val candidates: List<AiSubjectCandidate> = emptyList(),
+    val references: List<AiOfficialReference> = emptyList(),
+    val plan: AiOriginalColorPlanDraft? = null,
+    val notice: String? = null,
+    val activeModelLabel: String? = null,
+)
+
 class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val db = AppDatabase.get(application)
     private val paintsDao = db.paintDao()
@@ -115,6 +130,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val versionsDao = db.versionDao()
     private val timelineDao = db.timelineDao()
     private val partComparisonsDao = db.partComparisonDao()
+    private val originalColorPlansDao = db.originalColorPlanDao()
     private val testResultsDao = db.testResultDao()
     private val excel = ExcelBackupService(application, db)
     private val aiSettings = AiSettingsStore(application)
@@ -146,6 +162,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val partsComparisonState = _partsComparisonState.asStateFlow()
     private val _productCodeSearchState = MutableStateFlow(ProductCodeSearchUiState())
     val productCodeSearchState = _productCodeSearchState.asStateFlow()
+    private val _originalColorMatchState = MutableStateFlow(OriginalColorMatchUiState())
+    val originalColorMatchState = _originalColorMatchState.asStateFlow()
 
     fun clearMessage() { _message.value = null }
     fun clearAiResult() { _aiState.value = AiUiState() }
@@ -331,6 +349,131 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun testResults(recipeId: Long): Flow<List<TestResultEntity>> = testResultsDao.observeForRecipe(recipeId)
     fun projectTimeline(projectId: Long): Flow<List<ProjectTimelineEntryEntity>> = timelineDao.observeForProject(projectId)
     fun partComparisons(projectId: Long): Flow<List<PartComparisonEntity>> = partComparisonsDao.observeForProject(projectId)
+    fun originalColorPlans(projectId: Long): Flow<List<OriginalColorPlanEntity>> = originalColorPlansDao.observeForProject(projectId)
+
+    fun recognizeOriginalSubject(project: ProjectEntity, imageUri: String) {
+        aiJob?.cancel()
+        aiJob = viewModelScope.launch {
+            val selection = aiSettings.selection(AiTaskType.ORIGINAL_COLOR_MATCH)
+            _originalColorMatchState.value = OriginalColorMatchUiState(loading = true, stage = "RECOGNIZE", activeModelLabel = selection.resultLabel)
+            val apiKey = aiSettings.readApiKey()
+            if (apiKey.isBlank()) {
+                _originalColorMatchState.value = OriginalColorMatchUiState(stage = "PHOTO", notice = "AI 연결을 사용할 수 없습니다. 설정에서 API 키를 등록해주세요.", activeModelLabel = selection.resultLabel)
+                return@launch
+            }
+            try {
+                val photo = preparePaintPhoto(Uri.parse(imageUri))
+                val candidates = OpenAiService(apiKey, selection).recognizeOriginalSubject(
+                    photo.dataUrl,
+                    project.projectType,
+                    "이름=${project.name}; 모델=${project.modelName}; 메모=${project.memo.take(200)}",
+                )
+                _originalColorMatchState.value = OriginalColorMatchUiState(
+                    stage = "CANDIDATE",
+                    candidates = candidates,
+                    notice = if (candidates.isEmpty()) "대상을 인식하지 못했습니다. 이름을 직접 입력해주세요." else null,
+                    activeModelLabel = selection.resultLabel,
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                _originalColorMatchState.value = OriginalColorMatchUiState(stage = "PHOTO", notice = "대상 인식을 완료하지 못했습니다: ${error.message.orEmpty().take(120)}", activeModelLabel = selection.resultLabel)
+            }
+        }
+    }
+
+    fun searchOriginalReferences(candidate: AiSubjectCandidate) {
+        aiJob?.cancel()
+        aiJob = viewModelScope.launch {
+            val selection = aiSettings.selection(AiTaskType.ORIGINAL_COLOR_MATCH)
+            _originalColorMatchState.value = _originalColorMatchState.value.copy(loading = true, stage = "REFERENCE", notice = null, activeModelLabel = selection.resultLabel)
+            val apiKey = aiSettings.readApiKey()
+            if (apiKey.isBlank()) {
+                _originalColorMatchState.value = _originalColorMatchState.value.copy(loading = false, notice = "AI 연결을 사용할 수 없습니다. 설정에서 API 키를 등록해주세요.")
+                return@launch
+            }
+            try {
+                val references = OpenAiService(apiKey, selection).searchOriginalReferences(candidate.name, candidate.workTitle, candidate.versionName)
+                _originalColorMatchState.value = _originalColorMatchState.value.copy(
+                    loading = false,
+                    stage = "REFERENCE",
+                    references = references,
+                    notice = if (references.isEmpty()) "공식 참고자료를 확인하지 못했습니다. 사진 자체를 기준으로 분석할 수 있습니다." else null,
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                _originalColorMatchState.value = _originalColorMatchState.value.copy(loading = false, stage = "REFERENCE", notice = "공식 자료를 검색할 수 없습니다: ${error.message.orEmpty().take(120)}")
+            }
+        }
+    }
+
+    fun analyzeOriginalColors(
+        project: ProjectEntity,
+        imageUri: String,
+        candidate: AiSubjectCandidate,
+        reference: AiOfficialReference,
+        ownedOnly: Boolean,
+    ) {
+        aiJob?.cancel()
+        aiJob = viewModelScope.launch {
+            val selection = aiSettings.selection(AiTaskType.ORIGINAL_COLOR_MATCH)
+            _originalColorMatchState.value = _originalColorMatchState.value.copy(loading = true, stage = "PLAN", notice = null, activeModelLabel = selection.resultLabel)
+            val apiKey = aiSettings.readApiKey()
+            if (apiKey.isBlank()) {
+                _originalColorMatchState.value = _originalColorMatchState.value.copy(loading = false, notice = "AI 연결을 사용할 수 없습니다. 설정에서 API 키를 등록해주세요.")
+                return@launch
+            }
+            try {
+                val photo = preparePaintPhoto(Uri.parse(imageUri))
+                val plan = OpenAiService(apiKey, selection).analyzeOriginalColors(
+                    photo.dataUrl,
+                    project.projectType,
+                    candidate,
+                    reference,
+                    paints.value,
+                    ownedOnly,
+                )
+                _originalColorMatchState.value = _originalColorMatchState.value.copy(loading = false, stage = "PLAN", plan = plan)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                _originalColorMatchState.value = _originalColorMatchState.value.copy(loading = false, stage = "REFERENCE", notice = "원작 색상 분석을 완료하지 못했습니다: ${error.message.orEmpty().take(120)}")
+            }
+        }
+    }
+
+    fun saveOriginalColorPlan(projectId: Long, plan: AiOriginalColorPlanDraft, onSaved: () -> Unit = {}) = viewModelScope.launch {
+        runCatching {
+            originalColorPlansDao.insert(
+                OriginalColorPlanEntity(
+                    projectId = projectId,
+                    identifiedName = plan.subjectName,
+                    workTitle = plan.workTitle,
+                    versionName = plan.versionName,
+                    referenceTitle = plan.reference.title,
+                    referenceType = plan.reference.referenceType,
+                    referenceUrl = plan.reference.url,
+                    official = plan.reference.official,
+                    partsJson = originalColorPartsJson(plan.parts),
+                    modelLabel = _originalColorMatchState.value.activeModelLabel.orEmpty(),
+                ),
+            )
+        }.onSuccess {
+            _message.value = "원작 컬러 플랜을 저장했습니다."
+            onSaved()
+        }.onFailure { _message.value = "컬러 플랜을 저장하지 못했습니다: ${it.message.orEmpty()}" }
+    }
+
+    fun deleteOriginalColorPlan(plan: OriginalColorPlanEntity) = viewModelScope.launch {
+        runCatching { originalColorPlansDao.delete(plan) }
+            .onFailure { _message.value = "컬러 플랜을 삭제하지 못했습니다." }
+    }
+
+    fun clearOriginalColorMatch() {
+        aiJob?.cancel()
+        _originalColorMatchState.value = OriginalColorMatchUiState()
+    }
 
     fun savePartsBaseline(project: ProjectEntity, uri: String) = viewModelScope.launch {
         runCatching {
@@ -934,6 +1077,50 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun ingredientSnapshot(items: List<IngredientInput>): String = JSONArray().apply {
         items.forEach { put(JSONObject().put("paintId", it.paintId).put("amountMl", it.amountMl)) }
+    }.toString()
+
+    private fun originalColorPartsJson(parts: List<AiOriginalColorPart>): String = JSONArray().apply {
+        parts.forEach { part ->
+            put(
+                JSONObject()
+                    .put("category", part.category)
+                    .put("partName", part.partName)
+                    .put("targetHex", part.targetHex)
+                    .put("rgb", part.rgb)
+                    .put("colorFamily", part.colorFamily)
+                    .put("characteristics", part.characteristics)
+                    .put("nearestPaintId", part.nearestPaintId ?: -1)
+                    .put("nearestPaintName", part.nearestPaintName)
+                    .put("nearestPaintCode", part.nearestPaintCode.orEmpty())
+                    .put("singleColorUsable", part.singleColorUsable)
+                    .put(
+                        "mixOptions",
+                        JSONArray().apply {
+                            part.mixOptions.forEach { option ->
+                                put(
+                                    JSONObject()
+                                        .put("label", option.label)
+                                        .put("explanation", option.explanation)
+                                        .put(
+                                            "components",
+                                            JSONArray().apply {
+                                                option.components.forEach { component ->
+                                                    put(
+                                                        JSONObject()
+                                                            .put("paintId", component.paintId)
+                                                            .put("paintName", component.paintName)
+                                                            .put("productCode", component.productCode.orEmpty())
+                                                            .put("percent", component.percent),
+                                                    )
+                                                }
+                                            },
+                                        ),
+                                )
+                            }
+                        },
+                    ),
+            )
+        }
     }.toString()
 
     private fun parseHex(value: String): Int = runCatching {

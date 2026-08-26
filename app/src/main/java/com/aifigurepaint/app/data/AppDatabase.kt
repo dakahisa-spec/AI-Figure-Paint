@@ -242,6 +242,15 @@ interface PartComparisonDao {
     @Delete suspend fun delete(comparison: PartComparisonEntity)
 }
 
+@Dao
+interface OriginalColorPlanDao {
+    @Query("SELECT * FROM original_color_plans WHERE projectId = :projectId ORDER BY createdAt DESC")
+    fun observeForProject(projectId: Long): Flow<List<OriginalColorPlanEntity>>
+
+    @Insert suspend fun insert(plan: OriginalColorPlanEntity): Long
+    @Delete suspend fun delete(plan: OriginalColorPlanEntity)
+}
+
 @Database(
     entities = [
         PaintEntity::class,
@@ -254,8 +263,9 @@ interface PartComparisonDao {
         TestResultEntity::class,
         ProjectTimelineEntryEntity::class,
         PartComparisonEntity::class,
+        OriginalColorPlanEntity::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -267,6 +277,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun testResultDao(): TestResultDao
     abstract fun timelineDao(): TimelineDao
     abstract fun partComparisonDao(): PartComparisonDao
+    abstract fun originalColorPlanDao(): OriginalColorPlanDao
 
     companion object {
         @Volatile private var instance: AppDatabase? = null
@@ -276,7 +287,7 @@ abstract class AppDatabase : RoomDatabase() {
                 context.applicationContext,
                 AppDatabase::class.java,
                 "ai_figure_paint.db",
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).addCallback(object : Callback() {
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6).addCallback(object : Callback() {
                 override fun onCreate(db: SupportSQLiteDatabase) {
                     super.onCreate(db)
                     val now = System.currentTimeMillis()
@@ -453,6 +464,31 @@ abstract class AppDatabase : RoomDatabase() {
                     """.trimIndent(),
                 )
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_part_comparisons_projectId ON part_comparisons(projectId)")
+            }
+        }
+
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS original_color_plans (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        projectId INTEGER NOT NULL,
+                        identifiedName TEXT NOT NULL,
+                        workTitle TEXT NOT NULL,
+                        versionName TEXT NOT NULL,
+                        referenceTitle TEXT NOT NULL,
+                        referenceType TEXT NOT NULL,
+                        referenceUrl TEXT NOT NULL,
+                        official INTEGER NOT NULL,
+                        partsJson TEXT NOT NULL,
+                        modelLabel TEXT NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        FOREIGN KEY(projectId) REFERENCES projects(id) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_original_color_plans_projectId ON original_color_plans(projectId)")
             }
         }
     }

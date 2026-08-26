@@ -735,11 +735,13 @@ private fun WideProjectDetail(
     val usedPaints by viewModel.projectPaints(project.id).collectAsState(initial = emptyList())
     val timeline by viewModel.projectTimeline(project.id).collectAsState(initial = emptyList())
     val comparisons by viewModel.partComparisons(project.id).collectAsState(initial = emptyList())
+    val originalPlans by viewModel.originalColorPlans(project.id).collectAsState(initial = emptyList())
     val comparisonState by viewModel.partsComparisonState.collectAsState()
     val aiState by viewModel.aiState.collectAsState()
     var question by remember(project.id) { mutableStateOf("") }
     var addTimeline by remember { mutableStateOf(false) }
     var showPartsComparison by remember { mutableStateOf(false) }
+    var showOriginalColorMatch by remember { mutableStateOf(false) }
     Row(Modifier.fillMaxSize().padding(12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         Column(Modifier.weight(.48f).fillMaxHeight().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             PhotoPreview(project.photoUri, Modifier.fillMaxWidth().height(190.dp))
@@ -759,6 +761,10 @@ private fun WideProjectDetail(
             }
         }
         Column(Modifier.weight(.52f).fillMaxHeight().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SectionTitle("원작 컬러", if (originalPlans.isEmpty()) "공식 자료 기반 조색" else "${originalPlans.first().identifiedName} · ${originalPlans.size}개")
+                Button(onClick = { viewModel.clearOriginalColorMatch(); showOriginalColorMatch = true }) { Text("AI 매칭") }
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 SectionTitle("부품 비교", if (project.projectType == ProjectType.MECHANIC) "누락 의심 확인" else "교체 파츠 비교")
                 Button(onClick = { viewModel.clearPartsComparison(); showPartsComparison = true }) { Text("비교") }
@@ -818,6 +824,14 @@ private fun WideProjectDetail(
             state = comparisonState,
             viewModel = viewModel,
             onDismiss = { viewModel.clearPartsComparison(); showPartsComparison = false },
+        )
+    }
+    if (showOriginalColorMatch) {
+        OriginalColorMatchDialog(
+            project = project,
+            recipes = cards,
+            viewModel = viewModel,
+            onDismiss = { viewModel.clearOriginalColorMatch(); showOriginalColorMatch = false },
         )
     }
 }

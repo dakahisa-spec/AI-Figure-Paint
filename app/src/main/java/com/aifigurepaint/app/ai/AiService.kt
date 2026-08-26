@@ -90,6 +90,52 @@ data class AiProductCodeResult(
     val note: String,
 )
 
+data class AiSubjectCandidate(
+    val name: String,
+    val workTitle: String,
+    val versionName: String,
+    val confidence: String,
+    val note: String,
+)
+
+data class AiOfficialReference(
+    val title: String,
+    val sourceName: String,
+    val referenceType: String,
+    val url: String,
+    val official: Boolean,
+    val note: String,
+)
+
+data class AiOriginalMixOption(
+    val label: String,
+    val explanation: String,
+    val components: List<AiMixComponent>,
+)
+
+data class AiOriginalColorPart(
+    val category: String,
+    val partName: String,
+    val targetHex: String,
+    val rgb: String,
+    val colorFamily: String,
+    val characteristics: String,
+    val nearestPaintId: Long?,
+    val nearestPaintName: String,
+    val nearestPaintCode: String?,
+    val singleColorUsable: Boolean,
+    val mixOptions: List<AiOriginalMixOption>,
+)
+
+data class AiOriginalColorPlanDraft(
+    val subjectName: String,
+    val workTitle: String,
+    val versionName: String,
+    val reference: AiOfficialReference,
+    val parts: List<AiOriginalColorPart>,
+    val disclaimer: String,
+)
+
 interface AiService {
     suspend fun suggestMix(request: AiMixRequest): AiMixSuggestion
     suspend fun advise(question: String, context: String): String
@@ -97,6 +143,16 @@ interface AiService {
     suspend fun analyzeProjectPhoto(imageDataUrl: String, captureDate: String): AiProjectDraft
     suspend fun compareParts(baselineImageDataUrl: String, currentImageDataUrl: String): AiPartsComparisonDraft
     suspend fun searchProductCodes(paints: List<PaintEntity>): List<AiProductCodeResult>
+    suspend fun recognizeOriginalSubject(imageDataUrl: String, projectType: String, projectHint: String): List<AiSubjectCandidate>
+    suspend fun searchOriginalReferences(subjectName: String, workTitle: String, versionName: String): List<AiOfficialReference>
+    suspend fun analyzeOriginalColors(
+        imageDataUrl: String,
+        projectType: String,
+        subject: AiSubjectCandidate,
+        reference: AiOfficialReference,
+        paints: List<PaintEntity>,
+        ownedOnly: Boolean,
+    ): AiOriginalColorPlanDraft
 }
 
 class OpenAiService(
@@ -477,6 +533,319 @@ class OpenAiService(
             movedCount = json.optInt("moved_count", 0).coerceAtLeast(0),
             summary = json.optString("summary").trim(),
             findings = findings,
+        )
+    }
+
+    override suspend fun recognizeOriginalSubject(
+        imageDataUrl: String,
+        projectType: String,
+        projectHint: String,
+    ): List<AiSubjectCandidate> {
+        val content = JSONArray()
+            .put(
+                JSONObject().put("type", "input_text").put(
+                    "text",
+                    """
+                    이 사진의 피규어 또는 메카닉 대상을 식별하되 이름을 확정하지 말고 최대 3개 후보만 반환하세요.
+                    프로젝트 타입=$projectType, 기존 프로젝트 정보=$projectHint
+                    작품명, 캐릭터/기체명, 애니메이션판·Ver.Ka·RG·의상 등 구분 가능한 버전을 따로 적으세요.
+                    확실하지 않은 정보는 빈 문자열로 두고 신뢰도는 HIGH/MEDIUM/LOW 중 하나로 표시하세요.
+                    서로 다른 버전을 임의로 섞지 마세요.
+                    """.trimIndent(),
+                ),
+            )
+            .put(JSONObject().put("type", "input_image").put("image_url", imageDataUrl).put("detail", "high"))
+        val candidate = JSONObject()
+            .put("type", "object")
+            .put("additionalProperties", false)
+            .put("required", JSONArray(listOf("name", "work_title", "version_name", "confidence", "note")))
+            .put(
+                "properties",
+                JSONObject()
+                    .put("name", JSONObject().put("type", "string"))
+                    .put("work_title", JSONObject().put("type", "string"))
+                    .put("version_name", JSONObject().put("type", "string"))
+                    .put("confidence", JSONObject().put("type", "string").put("enum", JSONArray(listOf("HIGH", "MEDIUM", "LOW"))))
+                    .put("note", JSONObject().put("type", "string")),
+            )
+        val body = JSONObject()
+            .put("model", model)
+            .put("store", false)
+            .put("reasoning", JSONObject().put("effort", "medium"))
+            .put("input", JSONArray().put(JSONObject().put("role", "user").put("content", content)))
+            .put(
+                "text",
+                JSONObject().put(
+                    "format",
+                    JSONObject()
+                        .put("type", "json_schema")
+                        .put("name", "original_subject_candidates")
+                        .put("strict", true)
+                        .put(
+                            "schema",
+                            JSONObject()
+                                .put("type", "object")
+                                .put("additionalProperties", false)
+                                .put("required", JSONArray(listOf("candidates")))
+                                .put("properties", JSONObject().put("candidates", JSONObject().put("type", "array").put("maxItems", 3).put("items", candidate))),
+                        ),
+                ),
+            )
+        val rows = JSONObject(extractOutputText(post(body))).optJSONArray("candidates") ?: JSONArray()
+        return buildList {
+            for (index in 0 until rows.length()) {
+                val item = rows.optJSONObject(index) ?: continue
+                val name = item.optString("name").trim()
+                if (name.isBlank()) continue
+                add(
+                    AiSubjectCandidate(
+                        name = name,
+                        workTitle = item.optString("work_title").trim(),
+                        versionName = item.optString("version_name").trim(),
+                        confidence = item.optString("confidence", "LOW"),
+                        note = item.optString("note").trim(),
+                    ),
+                )
+            }
+        }
+    }
+
+    override suspend fun searchOriginalReferences(
+        subjectName: String,
+        workTitle: String,
+        versionName: String,
+    ): List<AiOfficialReference> {
+        val reference = JSONObject()
+            .put("type", "object")
+            .put("additionalProperties", false)
+            .put("required", JSONArray(listOf("title", "source_name", "reference_type", "url", "official", "note")))
+            .put(
+                "properties",
+                JSONObject()
+                    .put("title", JSONObject().put("type", "string"))
+                    .put("source_name", JSONObject().put("type", "string"))
+                    .put("reference_type", JSONObject().put("type", "string"))
+                    .put("url", JSONObject().put("type", "string"))
+                    .put("official", JSONObject().put("type", "boolean"))
+                    .put("note", JSONObject().put("type", "string")),
+            )
+        val body = JSONObject()
+            .put("model", model)
+            .put("store", false)
+            .put("reasoning", JSONObject().put("effort", "medium"))
+            .put("tools", JSONArray().put(JSONObject().put("type", "web_search")))
+            .put("tool_choice", "required")
+            .put(
+                "instructions",
+                """
+                선택된 캐릭터/기체의 원작 색상을 확인할 공식 참고자료를 검색합니다. 우선순위는 원작 공식 홈페이지, 제작사 공식 사이트, 공식 캐릭터/메카 페이지, 공식 설정자료, 공식 프라모델·피규어 상품 페이지, 공식 게임/애니메이션 자료, 공식 유통사입니다.
+                팬아트·개인 블로그를 공식 자료로 표시하지 마세요. 실제로 확인한 원본 웹페이지 URL만 반환하고 검색 결과 URL이나 추측 URL을 만들지 마세요.
+                애니메이션판, Ver.Ka, RG, 게임판, 의상 버전처럼 색이 다른 자료를 섞지 말고 최대 5개 후보로 구분하세요. 공식 여부를 확인하지 못하면 official=false로 두고 note에 명시하세요.
+                """.trimIndent(),
+            )
+            .put("input", "대상=$subjectName\n작품=$workTitle\n버전=$versionName\n공식 컬러 참고자료를 찾으세요.")
+            .put(
+                "text",
+                JSONObject().put(
+                    "format",
+                    JSONObject()
+                        .put("type", "json_schema")
+                        .put("name", "official_color_references")
+                        .put("strict", true)
+                        .put(
+                            "schema",
+                            JSONObject()
+                                .put("type", "object")
+                                .put("additionalProperties", false)
+                                .put("required", JSONArray(listOf("references")))
+                                .put("properties", JSONObject().put("references", JSONObject().put("type", "array").put("maxItems", 5).put("items", reference))),
+                        ),
+                ),
+            )
+        val rows = JSONObject(extractOutputText(post(body))).optJSONArray("references") ?: JSONArray()
+        return buildList {
+            for (index in 0 until rows.length()) {
+                val item = rows.optJSONObject(index) ?: continue
+                val url = item.optString("url").trim()
+                if (!url.startsWith("https://") && !url.startsWith("http://")) continue
+                add(
+                    AiOfficialReference(
+                        title = item.optString("title").trim(),
+                        sourceName = item.optString("source_name").trim(),
+                        referenceType = item.optString("reference_type").trim(),
+                        url = url,
+                        official = item.optBoolean("official", false),
+                        note = item.optString("note").trim(),
+                    ),
+                )
+            }
+        }.distinctBy { it.url }
+    }
+
+    override suspend fun analyzeOriginalColors(
+        imageDataUrl: String,
+        projectType: String,
+        subject: AiSubjectCandidate,
+        reference: AiOfficialReference,
+        paints: List<PaintEntity>,
+        ownedOnly: Boolean,
+    ): AiOriginalColorPlanDraft {
+        val available = paints.filter { !ownedOnly || it.owned }
+        require(available.isNotEmpty()) { "조건에 맞는 도료가 없습니다." }
+        val allowedIds = available.map { it.id }.toSet()
+        val inventory = available.joinToString("\n") {
+            "id=${it.id}; brand=${it.brand}; code=${it.productCode.orEmpty()}; name=${it.name}; korean=${it.koreanName}; hex=${hex(it.colorValue)}; owned=${it.owned}"
+        }
+        val component = JSONObject()
+            .put("type", "object")
+            .put("additionalProperties", false)
+            .put("required", JSONArray(listOf("paint_id", "paint_name", "product_code", "percent")))
+            .put(
+                "properties",
+                JSONObject()
+                    .put("paint_id", JSONObject().put("type", "integer"))
+                    .put("paint_name", JSONObject().put("type", "string"))
+                    .put("product_code", JSONObject().put("type", "string"))
+                    .put("percent", JSONObject().put("type", "number").put("minimum", 0).put("maximum", 100)),
+            )
+        val mixOption = JSONObject()
+            .put("type", "object")
+            .put("additionalProperties", false)
+            .put("required", JSONArray(listOf("label", "explanation", "components")))
+            .put(
+                "properties",
+                JSONObject()
+                    .put("label", JSONObject().put("type", "string"))
+                    .put("explanation", JSONObject().put("type", "string"))
+                    .put("components", JSONObject().put("type", "array").put("minItems", 1).put("maxItems", 5).put("items", component)),
+            )
+        val part = JSONObject()
+            .put("type", "object")
+            .put("additionalProperties", false)
+            .put("required", JSONArray(listOf("category", "part_name", "target_hex", "rgb", "color_family", "characteristics", "nearest_paint_id", "nearest_paint_name", "nearest_paint_code", "single_color_usable", "mix_options")))
+            .put(
+                "properties",
+                JSONObject()
+                    .put("category", JSONObject().put("type", "string"))
+                    .put("part_name", JSONObject().put("type", "string"))
+                    .put("target_hex", JSONObject().put("type", "string"))
+                    .put("rgb", JSONObject().put("type", "string"))
+                    .put("color_family", JSONObject().put("type", "string"))
+                    .put("characteristics", JSONObject().put("type", "string"))
+                    .put("nearest_paint_id", JSONObject().put("type", "integer").put("minimum", -1))
+                    .put("nearest_paint_name", JSONObject().put("type", "string"))
+                    .put("nearest_paint_code", JSONObject().put("type", "string"))
+                    .put("single_color_usable", JSONObject().put("type", "boolean"))
+                    .put("mix_options", JSONObject().put("type", "array").put("maxItems", 3).put("items", mixOption)),
+            )
+        val content = JSONArray()
+            .put(
+                JSONObject().put("type", "input_text").put(
+                    "text",
+                    """
+                    확인 대상: ${subject.name} / ${subject.workTitle} / ${subject.versionName}
+                    프로젝트 타입: $projectType
+                    사용자가 선택한 참고자료: ${reference.title} / ${reference.referenceType} / ${reference.sourceName}
+                    URL: ${reference.url}
+                    공식 확인: ${reference.official}
+
+                    선택된 URL의 자료를 웹 검색으로 다시 확인하고, 첨부 사용자 사진은 대상·부위 확인의 보조로만 사용하세요. 서로 다른 버전의 색을 섞지 마세요.
+                    전체 평균색이 아니라 실제로 확인되는 주요 도색 부위를 분리하세요. Mechanic이면 외장·프레임·무장·버니어·센서, Figure이면 피부·머리·눈·의상·소품 범주를 우선하되 보이지 않는 부위는 만들지 마세요.
+                    색상은 원작 참고 기반 예상값이며 화면 캡처·조명·렌더링·색보정 오차를 고려하세요.
+                    아래 도료 목록에서만 nearest와 mix components를 고르세요. 단색이 충분히 가까울 때만 single_color_usable=true로 하세요. 조색안은 최대 3개, 각 안료 비율 합계는 100이며 최소 도료 수를 우선하세요. DB는 변경하지 말고 제안만 반환하세요.
+
+                    사용 가능 도료(보유만=$ownedOnly):
+                    $inventory
+                    """.trimIndent(),
+                ),
+            )
+            .put(JSONObject().put("type", "input_image").put("image_url", imageDataUrl).put("detail", "high"))
+        val body = JSONObject()
+            .put("model", model)
+            .put("store", false)
+            .put("reasoning", JSONObject().put("effort", "high"))
+            .put("tools", JSONArray().put(JSONObject().put("type", "web_search")))
+            .put("tool_choice", "required")
+            .put("input", JSONArray().put(JSONObject().put("role", "user").put("content", content)))
+            .put(
+                "text",
+                JSONObject().put(
+                    "format",
+                    JSONObject()
+                        .put("type", "json_schema")
+                        .put("name", "original_color_plan")
+                        .put("strict", true)
+                        .put(
+                            "schema",
+                            JSONObject()
+                                .put("type", "object")
+                                .put("additionalProperties", false)
+                                .put("required", JSONArray(listOf("parts", "disclaimer")))
+                                .put(
+                                    "properties",
+                                    JSONObject()
+                                        .put("parts", JSONObject().put("type", "array").put("minItems", 1).put("maxItems", 12).put("items", part))
+                                        .put("disclaimer", JSONObject().put("type", "string")),
+                                ),
+                        ),
+                ),
+            )
+        val json = JSONObject(extractOutputText(post(body)))
+        val parts = buildList {
+            val rows = json.optJSONArray("parts") ?: JSONArray()
+            for (index in 0 until rows.length()) {
+                val row = rows.optJSONObject(index) ?: continue
+                val options = buildList {
+                    val optionRows = row.optJSONArray("mix_options") ?: JSONArray()
+                    for (optionIndex in 0 until optionRows.length()) {
+                        val optionRow = optionRows.optJSONObject(optionIndex) ?: continue
+                        val raw = buildList {
+                            val componentRows = optionRow.optJSONArray("components") ?: JSONArray()
+                            for (componentIndex in 0 until componentRows.length()) {
+                                val item = componentRows.optJSONObject(componentIndex) ?: continue
+                                val paintId = item.optLong("paint_id")
+                                val paint = available.firstOrNull { it.id == paintId } ?: continue
+                                val percent = item.optDouble("percent", 0.0).coerceAtLeast(0.0)
+                                if (percent > 0) add(AiMixComponent(paint.id, paint.name, paint.productCode, percent))
+                            }
+                        }
+                        val sum = raw.sumOf { it.percent }
+                        if (sum <= 0.0) continue
+                        add(
+                            AiOriginalMixOption(
+                                label = optionRow.optString("label").trim(),
+                                explanation = optionRow.optString("explanation").trim(),
+                                components = raw.map { it.copy(percent = it.percent / sum * 100.0) },
+                            ),
+                        )
+                    }
+                }
+                val nearestId = row.optLong("nearest_paint_id").takeIf { it in allowedIds }
+                val nearestPaint = available.firstOrNull { it.id == nearestId }
+                add(
+                    AiOriginalColorPart(
+                        category = row.optString("category").trim(),
+                        partName = row.optString("part_name").trim(),
+                        targetHex = normalizeHex(row.optString("target_hex")),
+                        rgb = row.optString("rgb").trim(),
+                        colorFamily = row.optString("color_family").trim(),
+                        characteristics = row.optString("characteristics").trim(),
+                        nearestPaintId = nearestPaint?.id,
+                        nearestPaintName = nearestPaint?.name.orEmpty(),
+                        nearestPaintCode = nearestPaint?.productCode,
+                        singleColorUsable = row.optBoolean("single_color_usable", false) && nearestPaint != null,
+                        mixOptions = options.take(3),
+                    ),
+                )
+            }
+        }
+        return AiOriginalColorPlanDraft(
+            subjectName = subject.name,
+            workTitle = subject.workTitle,
+            versionName = subject.versionName,
+            reference = reference,
+            parts = parts,
+            disclaimer = json.optString("disclaimer").ifBlank { "실제 결과는 도료의 안료 특성, 바탕색, 희석비 및 도막 두께에 따라 달라질 수 있습니다." },
         )
     }
 

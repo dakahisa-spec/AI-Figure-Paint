@@ -67,6 +67,33 @@ data class PartComparisonEntity(
 )
 
 @Entity(
+    tableName = "original_color_plans",
+    foreignKeys = [
+        ForeignKey(
+            entity = ProjectEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["projectId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+    indices = [Index("projectId")],
+)
+data class OriginalColorPlanEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val projectId: Long,
+    val identifiedName: String,
+    val workTitle: String,
+    val versionName: String,
+    val referenceTitle: String,
+    val referenceType: String,
+    val referenceUrl: String,
+    val official: Boolean,
+    val partsJson: String,
+    val modelLabel: String,
+    val createdAt: Long = System.currentTimeMillis(),
+)
+
+@Entity(
     tableName = "project_recipe_refs",
     primaryKeys = ["projectId", "recipeId"],
     foreignKeys = [
