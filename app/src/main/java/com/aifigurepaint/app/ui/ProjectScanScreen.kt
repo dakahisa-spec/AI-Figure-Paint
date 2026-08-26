@@ -7,6 +7,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -41,6 +42,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -71,7 +74,9 @@ internal fun ProjectScanScreen(
     val configured by viewModel.aiConfigured.collectAsState()
     val modelMode by viewModel.aiModelMode.collectAsState()
     val model = AiModelRouter.resolve(AiTaskType.SIMPLE_CHAT, modelMode).resultLabel
-    var selectedUri by remember { mutableStateOf<Uri?>(null) }
+    val photoUris = remember { mutableStateListOf<Uri>() }
+    var selectedPhotoIndex by remember { mutableIntStateOf(0) }
+    var pendingReplaceIndex by remember { mutableStateOf<Int?>(null) }
     var cameraUri by remember { mutableStateOf<Uri?>(null) }
     var projectName by remember { mutableStateOf("") }
     var modelName by remember { mutableStateOf("") }
@@ -92,16 +97,63 @@ internal fun ProjectScanScreen(
 
     val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
         if (success) {
-            resetDraft()
-            selectedUri = cameraUri
+            cameraUri?.let { uri ->
+                resetDraft()
+                val replaceIndex = pendingReplaceIndex
+                if (replaceIndex != null && replaceIndex in photoUris.indices) {
+                    photoUris[replaceIndex] = uri
+                    selectedPhotoIndex = replaceIndex
+                } else if (photoUris.size < 5) {
+                    photoUris += uri
+                    selectedPhotoIndex = photoUris.lastIndex
+                }
+            }
         }
+        pendingReplaceIndex = null
+        cameraUri = null
     }
-    val gallery = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+    val gallery = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        val remaining = (5 - photoUris.size).coerceAtLeast(0)
+        val accepted = uris.take(remaining)
+        if (accepted.isNotEmpty()) resetDraft()
+        accepted.forEach { uri ->
+            persistPhotoPermission(context, uri)
+            photoUris += uri
+        }
+        if (accepted.isNotEmpty()) selectedPhotoIndex = photoUris.lastIndex
+    }
+    val replaceGallery = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             persistPhotoPermission(context, uri)
             resetDraft()
-            selectedUri = uri
+            val replaceIndex = pendingReplaceIndex
+            if (replaceIndex != null && replaceIndex in photoUris.indices) {
+                photoUris[replaceIndex] = uri
+                selectedPhotoIndex = replaceIndex
+            }
         }
+        pendingReplaceIndex = null
+    }
+
+    fun launchCamera(replaceIndex: Int? = null) {
+        if (replaceIndex == null && photoUris.size >= 5) return
+        pendingReplaceIndex = replaceIndex
+        val uri = createProjectScanUri(context)
+        cameraUri = uri
+        camera.launch(uri)
+    }
+
+    fun launchGallery(replaceIndex: Int? = null) {
+        if (replaceIndex == null && photoUris.size >= 5) return
+        pendingReplaceIndex = replaceIndex
+        if (replaceIndex == null) gallery.launch(arrayOf("image/*")) else replaceGallery.launch(arrayOf("image/*"))
+    }
+
+    fun deletePhoto(index: Int) {
+        if (index !in photoUris.indices) return
+        resetDraft()
+        photoUris.removeAt(index)
+        selectedPhotoIndex = selectedPhotoIndex.coerceAtMost((photoUris.size - 1).coerceAtLeast(0))
     }
 
     LaunchedEffect(scanState.draft) {
@@ -124,18 +176,19 @@ internal fun ProjectScanScreen(
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
                     ProjectCapturePanel(
-                        selectedUri = selectedUri,
+                        photoUris = photoUris,
+                        selectedIndex = selectedPhotoIndex,
                         configured = configured,
                         model = model,
                         loading = scanState.loading,
                         notice = scanState.notice,
-                        onCamera = {
-                            val uri = createProjectScanUri(context)
-                            cameraUri = uri
-                            camera.launch(uri)
-                        },
-                        onGallery = { gallery.launch(arrayOf("image/*")) },
-                        onAnalyze = { selectedUri?.let(viewModel::analyzeProjectPhoto) },
+                        onSelect = { selectedPhotoIndex = it },
+                        onDelete = ::deletePhoto,
+                        onCamera = { launchCamera() },
+                        onGallery = { launchGallery() },
+                        onReplaceCamera = { launchCamera(selectedPhotoIndex) },
+                        onReplaceGallery = { launchGallery(selectedPhotoIndex) },
+                        onAnalyze = { viewModel.analyzeProjectPhotos(photoUris.toList()) },
                         onSettings = onSettings,
                         modifier = Modifier.weight(.43f).fillMaxHeight(),
                     )
@@ -152,9 +205,9 @@ internal fun ProjectScanScreen(
                         onMemo = { memo = it },
                         notes = notes,
                         confidence = scanState.draft?.confidence,
-                        canSave = projectName.isNotBlank() && selectedUri != null,
+                        canSave = projectName.isNotBlank() && photoUris.isNotEmpty(),
                         onSave = {
-                            val savedPhoto = selectedUri?.let { copyPhotoToAppStorage(context, it) }
+                            val savedPhotos = photoUris.mapNotNull { copyPhotoToAppStorage(context, it) }.distinct()
                             viewModel.saveProject(
                                 project = ProjectEntity(
                                     name = projectName.trim(),
@@ -162,9 +215,9 @@ internal fun ProjectScanScreen(
                                     memo = memo.trim(),
                                     startDate = parseDateInput(startDate),
                                     status = status,
-                                    photoUri = savedPhoto,
+                                    photoUri = savedPhotos.firstOrNull(),
                                 ),
-                                photoUris = listOfNotNull(savedPhoto),
+                                photoUris = savedPhotos,
                             ) { id ->
                                 viewModel.clearProjectScan()
                                 onSaved(id)
@@ -179,18 +232,19 @@ internal fun ProjectScanScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     ProjectCapturePanel(
-                        selectedUri = selectedUri,
+                        photoUris = photoUris,
+                        selectedIndex = selectedPhotoIndex,
                         configured = configured,
                         model = model,
                         loading = scanState.loading,
                         notice = scanState.notice,
-                        onCamera = {
-                            val uri = createProjectScanUri(context)
-                            cameraUri = uri
-                            camera.launch(uri)
-                        },
-                        onGallery = { gallery.launch(arrayOf("image/*")) },
-                        onAnalyze = { selectedUri?.let(viewModel::analyzeProjectPhoto) },
+                        onSelect = { selectedPhotoIndex = it },
+                        onDelete = ::deletePhoto,
+                        onCamera = { launchCamera() },
+                        onGallery = { launchGallery() },
+                        onReplaceCamera = { launchCamera(selectedPhotoIndex) },
+                        onReplaceGallery = { launchGallery(selectedPhotoIndex) },
+                        onAnalyze = { viewModel.analyzeProjectPhotos(photoUris.toList()) },
                         onSettings = onSettings,
                     )
                     ProjectDraftForm(
@@ -206,9 +260,9 @@ internal fun ProjectScanScreen(
                         onMemo = { memo = it },
                         notes = notes,
                         confidence = scanState.draft?.confidence,
-                        canSave = projectName.isNotBlank() && selectedUri != null,
+                        canSave = projectName.isNotBlank() && photoUris.isNotEmpty(),
                         onSave = {
-                            val savedPhoto = selectedUri?.let { copyPhotoToAppStorage(context, it) }
+                            val savedPhotos = photoUris.mapNotNull { copyPhotoToAppStorage(context, it) }.distinct()
                             viewModel.saveProject(
                                 project = ProjectEntity(
                                     name = projectName.trim(),
@@ -216,9 +270,9 @@ internal fun ProjectScanScreen(
                                     memo = memo.trim(),
                                     startDate = parseDateInput(startDate),
                                     status = status,
-                                    photoUri = savedPhoto,
+                                    photoUri = savedPhotos.firstOrNull(),
                                 ),
-                                photoUris = listOfNotNull(savedPhoto),
+                                photoUris = savedPhotos,
                             ) { id ->
                                 viewModel.clearProjectScan()
                                 onSaved(id)
@@ -235,17 +289,24 @@ internal fun ProjectScanScreen(
 
 @Composable
 private fun ProjectCapturePanel(
-    selectedUri: Uri?,
+    photoUris: List<Uri>,
+    selectedIndex: Int,
     configured: Boolean,
     model: String,
     loading: Boolean,
     notice: String?,
+    onSelect: (Int) -> Unit,
+    onDelete: (Int) -> Unit,
     onCamera: () -> Unit,
     onGallery: () -> Unit,
+    onReplaceCamera: () -> Unit,
+    onReplaceGallery: () -> Unit,
     onAnalyze: () -> Unit,
     onSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val selectedUri = photoUris.getOrNull(selectedIndex)
+    val canAddPhoto = photoUris.size < 5 && !loading
     Card(
         modifier = modifier.fillMaxWidth().border(1.dp, StudioBorder, RoundedCornerShape(12.dp)),
         shape = RoundedCornerShape(12.dp),
@@ -254,9 +315,12 @@ private fun ProjectCapturePanel(
     ) {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("PROJECT VISION", style = MaterialTheme.typography.labelMedium, color = StudioTeal, fontWeight = FontWeight.Bold)
-            Text("사진에서 프로젝트\n등록 초안을 만듭니다.", style = MaterialTheme.typography.headlineMedium, color = StudioNavy)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("사진에서 프로젝트\n등록 초안을 만듭니다.", modifier = Modifier.weight(1f), style = MaterialTheme.typography.headlineMedium, color = StudioNavy)
+                Text("${photoUris.size} / 5장", style = MaterialTheme.typography.titleMedium, color = StudioTeal, fontWeight = FontWeight.Bold)
+            }
             Text(
-                "박스, 키트 또는 현재 작업 상태가 잘 보이게 촬영하면 $model 이 프로젝트명·모델명·상태·메모를 제안합니다.",
+                "같은 박스·키트·작업 상태를 정면, 측면, 라벨 등 여러 각도에서 촬영하면 $model 분석 정확도가 높아집니다. 1장만으로도 분석할 수 있습니다.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -273,16 +337,47 @@ private fun ProjectCapturePanel(
                 }
             } else {
                 PhotoPreview(selectedUri.toString(), Modifier.fillMaxWidth().height(218.dp))
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    photoUris.forEachIndexed { index, uri ->
+                        Box(
+                            Modifier.size(width = 92.dp, height = 72.dp)
+                                .border(
+                                    width = if (index == selectedIndex) 2.dp else 1.dp,
+                                    color = if (index == selectedIndex) StudioTeal else StudioBorder,
+                                    shape = RoundedCornerShape(8.dp),
+                                )
+                                .clickable { onSelect(index) },
+                        ) {
+                            PhotoPreview(uri.toString(), Modifier.fillMaxSize())
+                            Text(
+                                "사진 ${index + 1}",
+                                modifier = Modifier.align(Alignment.BottomStart)
+                                    .background(MaterialTheme.colorScheme.surface.copy(alpha = .88f), RoundedCornerShape(topEnd = 6.dp))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = StudioNavy,
+                            )
+                        }
+                    }
+                }
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedButton(onClick = onReplaceCamera, enabled = !loading, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("선택 사진 촬영 교체") }
+                    OutlinedButton(onClick = onReplaceGallery, enabled = !loading, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("갤러리 교체") }
+                    TextButton(onClick = { onDelete(selectedIndex) }, enabled = !loading) { Text("삭제", color = MaterialTheme.colorScheme.error) }
+                }
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onCamera, modifier = Modifier.weight(1f).height(42.dp), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("사진 촬영") }
-                OutlinedButton(onClick = onGallery, modifier = Modifier.weight(1f).height(42.dp), contentPadding = PaddingValues(horizontal = 8.dp)) {
-                    Text("갤러리", color = StudioNavy)
+                Button(onClick = onCamera, enabled = canAddPhoto, modifier = Modifier.weight(1f).height(42.dp), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("사진 촬영 추가") }
+                OutlinedButton(onClick = onGallery, enabled = canAddPhoto, modifier = Modifier.weight(1f).height(42.dp), contentPadding = PaddingValues(horizontal = 8.dp)) {
+                    Text("갤러리 추가", color = StudioNavy)
                 }
+            }
+            if (photoUris.size >= 5) {
+                Text("최대 5장까지 등록할 수 있습니다.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Button(
                 onClick = onAnalyze,
-                enabled = selectedUri != null && !loading,
+                enabled = photoUris.isNotEmpty() && !loading,
                 modifier = Modifier.fillMaxWidth().height(46.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = StudioTeal, contentColor = Color.White),
             ) {
@@ -291,6 +386,13 @@ private fun ProjectCapturePanel(
                     Spacer(Modifier.size(8.dp))
                 }
                 Text(if (loading) "분석 중" else "GPT-5.6으로 프로젝트 분석")
+            }
+            if (photoUris.isNotEmpty()) {
+                Text(
+                    "등록된 사진 ${photoUris.size}장을 한 번의 AI 요청으로 함께 분석합니다.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(

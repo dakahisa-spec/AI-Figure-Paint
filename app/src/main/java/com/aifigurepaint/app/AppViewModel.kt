@@ -826,7 +826,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun analyzeProjectPhoto(uri: Uri) {
+    fun analyzeProjectPhotos(uris: List<Uri>) {
+        require(uris.size in 1..5) { "프로젝트 사진은 1장 이상 5장 이하로 선택해주세요." }
         aiJob?.cancel()
         aiJob = viewModelScope.launch {
             _projectScanState.value = ProjectScanUiState(loading = true)
@@ -841,7 +842,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 notes = "사진을 참고해 프로젝트 정보를 직접 확인해주세요. 시작일은 촬영일을 초안으로 넣었습니다.",
             )
             try {
-                val prepared = preparePaintPhoto(uri)
+                val prepared = uris.mapNotNull { uri ->
+                    runCatching { preparePaintPhoto(uri) }.getOrNull()
+                }
+                require(prepared.isNotEmpty()) { "선택한 사진을 불러올 수 없습니다." }
                 val apiKey = aiSettings.readApiKey()
                 if (apiKey.isBlank()) {
                     _projectScanState.value = ProjectScanUiState(
@@ -850,8 +854,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 } else {
                     val result = OpenAiService(apiKey, aiSettings.selection(AiTaskType.SIMPLE_CHAT))
-                        .analyzeProjectPhoto(prepared.dataUrl, captureDate)
-                    _projectScanState.value = ProjectScanUiState(draft = result)
+                        .analyzeProjectPhotos(prepared.map { it.dataUrl }, captureDate)
+                    _projectScanState.value = ProjectScanUiState(
+                        draft = result,
+                        notice = if (prepared.size < uris.size) {
+                            "사진 ${uris.size}장 중 ${prepared.size}장을 불러와 함께 분석했습니다. 불러오지 못한 사진은 교체해주세요."
+                        } else null,
+                    )
                 }
             } catch (_: CancellationException) {
                 throw CancellationException()

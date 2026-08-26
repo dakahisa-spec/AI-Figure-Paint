@@ -145,7 +145,7 @@ interface AiService {
     suspend fun suggestMix(request: AiMixRequest): AiMixSuggestion
     suspend fun advise(question: String, context: String): String
     suspend fun analyzePaintPhotos(imageDataUrls: List<String>): AiPaintDraft
-    suspend fun analyzeProjectPhoto(imageDataUrl: String, captureDate: String): AiProjectDraft
+    suspend fun analyzeProjectPhotos(imageDataUrls: List<String>, captureDate: String): AiProjectDraft
     suspend fun compareParts(baselineImageDataUrl: String, currentImageDataUrl: String): AiPartsComparisonDraft
     suspend fun searchProductCodes(paints: List<PaintEntity>): List<AiProductCodeResult>
     suspend fun recognizeOriginalSubject(imageDataUrls: List<String>, projectType: String, projectHint: String): AiSubjectRecognitionResult
@@ -366,7 +366,8 @@ class OpenAiService(
         )
     }
 
-    override suspend fun analyzeProjectPhoto(imageDataUrl: String, captureDate: String): AiProjectDraft {
+    override suspend fun analyzeProjectPhotos(imageDataUrls: List<String>, captureDate: String): AiProjectDraft {
+        require(imageDataUrls.size in 1..5) { "프로젝트 사진은 1장 이상 5장 이하로 선택해주세요." }
         val content = JSONArray()
             .put(
                 JSONObject()
@@ -374,8 +375,9 @@ class OpenAiService(
                     .put(
                         "text",
                         """
-                        이 사진은 피규어·프라모델·레진킷 도색 프로젝트를 등록하기 위한 사진입니다.
-                        사진에 실제로 보이는 박스명, 키트명, 캐릭터명, 모델명과 작업 진행 상태만 근거로 검토용 초안을 만드세요.
+                        첨부된 모든 이미지는 동일한 피규어·프라모델·레진킷 도색 프로젝트를 서로 다른 각도에서 촬영한 사진입니다.
+                        각 이미지의 박스명, 키트명, 캐릭터명, 모델명과 작업 진행 상태 정보를 서로 보완해 하나의 검토용 초안을 만드세요.
+                        이미지 사이 정보가 충돌하거나 서로 다른 대상으로 보이면 임의로 합치지 말고 notes에 사용자 확인이 필요하다고 적으세요.
                         project_name은 사용자가 목록에서 알아보기 쉬운 짧은 프로젝트 이름, model_name은 식별 가능한 공식 모델·키트명입니다.
                         글자나 제품을 식별할 수 없으면 추측하지 말고 해당 문자열을 비워두세요.
                         사진만으로 실제 시작일을 확정할 수 없으므로, 명확한 날짜 표기가 없다면 촬영일 $captureDate 를 start_date 초안으로 사용하세요.
@@ -385,12 +387,14 @@ class OpenAiService(
                         """.trimIndent(),
                     ),
             )
-            .put(
+        imageDataUrls.forEach { imageDataUrl ->
+            content.put(
                 JSONObject()
                     .put("type", "input_image")
                     .put("image_url", imageDataUrl)
                     .put("detail", "high"),
             )
+        }
         val properties = JSONObject()
             .put("project_name", JSONObject().put("type", "string"))
             .put("model_name", JSONObject().put("type", "string"))
