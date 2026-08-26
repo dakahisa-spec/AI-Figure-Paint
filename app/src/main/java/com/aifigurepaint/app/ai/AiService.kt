@@ -98,6 +98,11 @@ data class AiSubjectCandidate(
     val note: String,
 )
 
+data class AiSubjectRecognitionResult(
+    val candidates: List<AiSubjectCandidate>,
+    val photoWarning: String,
+)
+
 data class AiOfficialReference(
     val title: String,
     val sourceName: String,
@@ -143,10 +148,10 @@ interface AiService {
     suspend fun analyzeProjectPhoto(imageDataUrl: String, captureDate: String): AiProjectDraft
     suspend fun compareParts(baselineImageDataUrl: String, currentImageDataUrl: String): AiPartsComparisonDraft
     suspend fun searchProductCodes(paints: List<PaintEntity>): List<AiProductCodeResult>
-    suspend fun recognizeOriginalSubject(imageDataUrl: String, projectType: String, projectHint: String): List<AiSubjectCandidate>
+    suspend fun recognizeOriginalSubject(imageDataUrls: List<String>, projectType: String, projectHint: String): AiSubjectRecognitionResult
     suspend fun searchOriginalReferences(subjectName: String, workTitle: String, versionName: String): List<AiOfficialReference>
     suspend fun analyzeOriginalColors(
-        imageDataUrl: String,
+        imageDataUrls: List<String>,
         projectType: String,
         subject: AiSubjectCandidate,
         reference: AiOfficialReference,
@@ -537,24 +542,31 @@ class OpenAiService(
     }
 
     override suspend fun recognizeOriginalSubject(
-        imageDataUrl: String,
+        imageDataUrls: List<String>,
         projectType: String,
         projectHint: String,
-    ): List<AiSubjectCandidate> {
+    ): AiSubjectRecognitionResult {
+        require(imageDataUrls.size in 1..5) { "원작 컬러 매칭 사진은 1~5장이 필요합니다." }
         val content = JSONArray()
             .put(
                 JSONObject().put("type", "input_text").put(
                     "text",
                     """
-                    이 사진의 피규어 또는 메카닉 대상을 식별하되 이름을 확정하지 말고 최대 3개 후보만 반환하세요.
+                    첨부된 ${imageDataUrls.size}장은 동일한 피규어 또는 메카닉을 서로 다른 각도에서 촬영한 사진입니다.
+                    정면·후면·측면·얼굴/헤드·장비 정보를 서로 보완해 하나의 통합 후보 목록을 만드세요. 사진별 결과를 따로 만들지 마세요.
+                    대상을 식별하되 이름을 확정하지 말고 최대 3개 후보만 반환하세요.
                     프로젝트 타입=$projectType, 기존 프로젝트 정보=$projectHint
                     작품명, 캐릭터/기체명, 애니메이션판·Ver.Ka·RG·의상 등 구분 가능한 버전을 따로 적으세요.
                     확실하지 않은 정보는 빈 문자열로 두고 신뢰도는 HIGH/MEDIUM/LOW 중 하나로 표시하세요.
                     서로 다른 버전을 임의로 섞지 마세요.
+                    일부 사진이 다른 대상으로 보이면 무리하게 합치지 말고 photo_warning에 그 가능성을 명확히 적으세요. 문제가 없으면 빈 문자열로 두세요.
                     """.trimIndent(),
                 ),
             )
-            .put(JSONObject().put("type", "input_image").put("image_url", imageDataUrl).put("detail", "high"))
+        imageDataUrls.forEachIndexed { index, dataUrl ->
+            content.put(JSONObject().put("type", "input_text").put("text", "사용자 사진 ${index + 1}/${imageDataUrls.size}"))
+            content.put(JSONObject().put("type", "input_image").put("image_url", dataUrl).put("detail", "high"))
+        }
         val candidate = JSONObject()
             .put("type", "object")
             .put("additionalProperties", false)
@@ -586,13 +598,19 @@ class OpenAiService(
                             JSONObject()
                                 .put("type", "object")
                                 .put("additionalProperties", false)
-                                .put("required", JSONArray(listOf("candidates")))
-                                .put("properties", JSONObject().put("candidates", JSONObject().put("type", "array").put("maxItems", 3).put("items", candidate))),
+                                .put("required", JSONArray(listOf("candidates", "photo_warning")))
+                                .put(
+                                    "properties",
+                                    JSONObject()
+                                        .put("candidates", JSONObject().put("type", "array").put("maxItems", 3).put("items", candidate))
+                                        .put("photo_warning", JSONObject().put("type", "string")),
+                                ),
                         ),
                 ),
             )
-        val rows = JSONObject(extractOutputText(post(body))).optJSONArray("candidates") ?: JSONArray()
-        return buildList {
+        val json = JSONObject(extractOutputText(post(body)))
+        val rows = json.optJSONArray("candidates") ?: JSONArray()
+        val candidates = buildList {
             for (index in 0 until rows.length()) {
                 val item = rows.optJSONObject(index) ?: continue
                 val name = item.optString("name").trim()
@@ -608,6 +626,7 @@ class OpenAiService(
                 )
             }
         }
+        return AiSubjectRecognitionResult(candidates, json.optString("photo_warning").trim())
     }
 
     override suspend fun searchOriginalReferences(
@@ -683,7 +702,7 @@ class OpenAiService(
     }
 
     override suspend fun analyzeOriginalColors(
-        imageDataUrl: String,
+        imageDataUrls: List<String>,
         projectType: String,
         subject: AiSubjectCandidate,
         reference: AiOfficialReference,
@@ -738,6 +757,7 @@ class OpenAiService(
                     .put("single_color_usable", JSONObject().put("type", "boolean"))
                     .put("mix_options", JSONObject().put("type", "array").put("maxItems", 3).put("items", mixOption)),
             )
+        require(imageDataUrls.size in 1..5) { "원작 컬러 매칭 사진은 1~5장이 필요합니다." }
         val content = JSONArray()
             .put(
                 JSONObject().put("type", "input_text").put(
@@ -749,7 +769,7 @@ class OpenAiService(
                     URL: ${reference.url}
                     공식 확인: ${reference.official}
 
-                    선택된 URL의 자료를 웹 검색으로 다시 확인하고, 첨부 사용자 사진은 대상·부위 확인의 보조로만 사용하세요. 서로 다른 버전의 색을 섞지 마세요.
+                    선택된 URL의 자료를 웹 검색으로 다시 확인하세요. 첨부된 ${imageDataUrls.size}장의 사용자 사진은 동일 대상의 여러 각도이며 버전·의상·장비·실제 존재 부위를 확인하는 보조로만 종합 사용하세요. 사용자 사진의 조명색을 공식 설정색으로 사용하지 말고 서로 다른 버전의 색을 섞지 마세요.
                     전체 평균색이 아니라 실제로 확인되는 주요 도색 부위를 분리하세요. Mechanic이면 외장·프레임·무장·버니어·센서, Figure이면 피부·머리·눈·의상·소품 범주를 우선하되 보이지 않는 부위는 만들지 마세요.
                     색상은 원작 참고 기반 예상값이며 화면 캡처·조명·렌더링·색보정 오차를 고려하세요.
                     아래 도료 목록에서만 nearest와 mix components를 고르세요. 단색이 충분히 가까울 때만 single_color_usable=true로 하세요. 조색안은 최대 3개, 각 안료 비율 합계는 100이며 최소 도료 수를 우선하세요. DB는 변경하지 말고 제안만 반환하세요.
@@ -759,7 +779,10 @@ class OpenAiService(
                     """.trimIndent(),
                 ),
             )
-            .put(JSONObject().put("type", "input_image").put("image_url", imageDataUrl).put("detail", "high"))
+        imageDataUrls.forEachIndexed { index, dataUrl ->
+            content.put(JSONObject().put("type", "input_text").put("text", "사용자 보조 사진 ${index + 1}/${imageDataUrls.size}"))
+            content.put(JSONObject().put("type", "input_image").put("image_url", dataUrl).put("detail", "high"))
+        }
         val body = JSONObject()
             .put("model", model)
             .put("store", false)

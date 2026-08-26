@@ -36,6 +36,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -76,8 +77,12 @@ internal fun OriginalColorMatchDialog(
     val state by viewModel.originalColorMatchState.collectAsState()
     val projectPhotos by viewModel.photos(PhotoOwner.PROJECT, project.id).collectAsState(initial = emptyList())
     val savedPlans by viewModel.originalColorPlans(project.id).collectAsState(initial = emptyList())
-    var imageUri by remember(project.id) { mutableStateOf(projectPhotos.firstOrNull()?.uri ?: project.photoUri) }
+    val imageUris = remember(project.id) { mutableStateListOf<String>() }
+    var selectedPreviewUri by remember(project.id) { mutableStateOf<String?>(null) }
+    var initialPhotoLoaded by remember(project.id) { mutableStateOf(false) }
     var cameraUri by remember { mutableStateOf<Uri?>(null) }
+    var pendingReplaceIndex by remember { mutableStateOf<Int?>(null) }
+    var photoNotice by remember { mutableStateOf<String?>(null) }
     var selectedCandidate by remember { mutableStateOf<AiSubjectCandidate?>(null) }
     var selectedReference by remember { mutableStateOf<AiOfficialReference?>(null) }
     var manualName by remember { mutableStateOf("") }
@@ -86,13 +91,47 @@ internal fun OriginalColorMatchDialog(
     var ownedOnly by remember { mutableStateOf(true) }
     var totalMl by remember { mutableStateOf(10.0) }
 
-    LaunchedEffect(projectPhotos) {
-        if (imageUri == null) imageUri = projectPhotos.firstOrNull()?.uri ?: project.photoUri
+    LaunchedEffect(projectPhotos, project.photoUri) {
+        if (!initialPhotoLoaded) {
+            val firstPhoto = projectPhotos.firstOrNull()?.uri ?: project.photoUri
+            if (firstPhoto != null) {
+                imageUris += firstPhoto
+                selectedPreviewUri = firstPhoto
+                initialPhotoLoaded = true
+            }
+        }
     }
 
-    fun acceptPhoto(uri: Uri) {
-        copyPhotoToAppStorage(context, uri)?.let {
-            imageUri = it
+    fun resetAnalysis() {
+        selectedCandidate = null
+        selectedReference = null
+        viewModel.clearOriginalColorMatch()
+    }
+
+    fun acceptPhoto(uri: Uri, replaceIndex: Int? = null) {
+        val storedUri = copyPhotoToAppStorage(context, uri)
+        if (storedUri == null) {
+            pendingReplaceIndex = null
+            photoNotice = "사진을 불러올 수 없습니다. 다른 사진으로 교체해주세요."
+            return
+        }
+        if (replaceIndex != null && replaceIndex in imageUris.indices) {
+            imageUris[replaceIndex] = storedUri
+        } else if (imageUris.size < 5) {
+            imageUris += storedUri
+        }
+        initialPhotoLoaded = true
+        selectedPreviewUri = storedUri
+        pendingReplaceIndex = null
+        photoNotice = null
+        resetAnalysis()
+    }
+
+    fun addProjectPhoto(uri: String) {
+        if (imageUris.size < 5 && uri !in imageUris) {
+            imageUris += uri
+            initialPhotoLoaded = true
+            selectedPreviewUri = uri
             selectedCandidate = null
             selectedReference = null
             viewModel.clearOriginalColorMatch()
@@ -100,51 +139,106 @@ internal fun OriginalColorMatchDialog(
     }
 
     val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
-        if (success) cameraUri?.let(::acceptPhoto)
+        if (success) cameraUri?.let { acceptPhoto(it, pendingReplaceIndex) }
         cameraUri = null
+        if (!success) pendingReplaceIndex = null
     }
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let(::acceptPhoto) }
-    fun takePhoto() {
+    val addPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        val remaining = (5 - imageUris.size).coerceAtLeast(0)
+        uris.take(remaining).forEach { acceptPhoto(it) }
+    }
+    val replacePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) acceptPhoto(uri, pendingReplaceIndex) else pendingReplaceIndex = null
+    }
+    fun takePhoto(replaceIndex: Int? = null) {
+        pendingReplaceIndex = replaceIndex
         createOriginalMatchUri(context).also { cameraUri = it; camera.launch(it) }
     }
 
-    val photoPane: @Composable () -> Unit = {
+    val photoPane: @Composable (Int) -> Unit = { columns ->
         Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
-            Text("분석 사진", style = MaterialTheme.typography.titleLarge)
-            PhotoPreview(imageUri, Modifier.fillMaxWidth().height(230.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                OutlinedButton(onClick = ::takePhoto, modifier = Modifier.weight(1f)) { Text("카메라 촬영") }
-                OutlinedButton(onClick = { picker.launch(arrayOf("image/*")) }, modifier = Modifier.weight(1f)) { Text("갤러리") }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("분석 사진", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                Text("${imageUris.size} / 5장", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
             }
+            PhotoPreview(selectedPreviewUri, Modifier.fillMaxWidth().height(210.dp))
+            imageUris.chunked(columns).forEachIndexed { rowIndex, rowUris ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                    rowUris.forEachIndexed { columnIndex, uri ->
+                        val index = rowIndex * columns + columnIndex
+                        OutlinedCard(
+                            Modifier.weight(1f).clickable { selectedPreviewUri = uri },
+                            colors = CardDefaults.outlinedCardColors(
+                                if (selectedPreviewUri == uri) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+                            ),
+                        ) {
+                            PhotoPreview(uri, Modifier.fillMaxWidth().height(78.dp))
+                            Text("사진 ${index + 1}", Modifier.padding(horizontal = 7.dp, vertical = 5.dp), style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                    repeat(columns - rowUris.size) { Spacer(Modifier.weight(1f)) }
+                }
+            }
+            val selectedIndex = selectedPreviewUri?.let(imageUris::indexOf) ?: -1
+            if (selectedIndex >= 0) {
+                Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                    OutlinedButton(onClick = { takePhoto(selectedIndex) }, modifier = Modifier.weight(1f)) { Text("선택 사진 재촬영") }
+                    OutlinedButton(
+                        onClick = { pendingReplaceIndex = selectedIndex; replacePicker.launch(arrayOf("image/*")) },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("갤러리로 교체") }
+                    TextButton(
+                        onClick = {
+                            imageUris.removeAt(selectedIndex)
+                            selectedPreviewUri = imageUris.getOrNull(selectedIndex.coerceAtMost(imageUris.lastIndex))
+                            resetAnalysis()
+                        },
+                    ) { Text("삭제") }
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                OutlinedButton(onClick = { takePhoto() }, enabled = imageUris.size < 5, modifier = Modifier.weight(1f)) { Text("카메라 추가") }
+                OutlinedButton(onClick = { addPicker.launch(arrayOf("image/*")) }, enabled = imageUris.size < 5, modifier = Modifier.weight(1f)) { Text("갤러리 추가") }
+            }
+            if (imageUris.size >= 5) {
+                Text("최대 5장까지 사용할 수 있습니다.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+            }
+            photoNotice?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
             if (projectPhotos.isNotEmpty()) {
                 Text("프로젝트 사진 사용", style = MaterialTheme.typography.labelLarge)
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    projectPhotos.take(3).forEach { photo ->
-                        OutlinedCard(
-                            Modifier.weight(1f).clickable {
-                                imageUri = photo.uri
-                                selectedCandidate = null
-                                selectedReference = null
-                                viewModel.clearOriginalColorMatch()
-                            },
-                            colors = CardDefaults.outlinedCardColors(
-                                if (imageUri == photo.uri) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
-                            ),
-                        ) { PhotoPreview(photo.uri, Modifier.fillMaxWidth().height(72.dp)) }
+                projectPhotos.take(5).chunked(columns).forEach { rowPhotos ->
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        rowPhotos.forEach { photo ->
+                            OutlinedCard(
+                                Modifier.weight(1f).clickable { addProjectPhoto(photo.uri) },
+                                colors = CardDefaults.outlinedCardColors(
+                                    if (photo.uri in imageUris) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+                                ),
+                            ) { PhotoPreview(photo.uri, Modifier.fillMaxWidth().height(68.dp)) }
+                        }
+                        repeat(columns - rowPhotos.size) { Spacer(Modifier.weight(1f)) }
                     }
                 }
             }
             Text(
-                "AI가 이름을 자동 확정하지 않습니다. 후보를 확인한 뒤 공식 자료를 직접 선택하세요.",
+                "정면·후면·측면·얼굴/헤드·특징적인 장비를 여러 각도에서 촬영하면 인식 정확도가 높아집니다. 1장만으로도 분석할 수 있습니다.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Button(
-                onClick = { imageUri?.let { viewModel.recognizeOriginalSubject(project, it) } },
-                enabled = imageUri != null && !state.loading,
+                onClick = { viewModel.recognizeOriginalSubject(project, imageUris.toList()) },
+                enabled = imageUris.isNotEmpty() && !state.loading,
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("사진에서 대상 후보 찾기") }
+            if (imageUris.isNotEmpty()) {
+                Text(
+                    "등록된 사진 ${imageUris.size}장을 한 번의 AI 요청으로 함께 분석합니다.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             state.activeModelLabel?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary) }
+            state.photoWarning?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
             if (savedPlans.isNotEmpty()) {
                 HorizontalDivider(Modifier.padding(vertical = 4.dp))
                 Text("저장된 원작 컬러", style = MaterialTheme.typography.titleMedium)
@@ -212,8 +306,8 @@ internal fun OriginalColorMatchDialog(
                     onClick = {
                         val candidate = selectedCandidate ?: return@Button
                         val reference = selectedReference ?: return@Button
-                        val photo = imageUri ?: return@Button
-                        viewModel.analyzeOriginalColors(project, photo, candidate, reference, ownedOnly)
+                        if (imageUris.isEmpty()) return@Button
+                        viewModel.analyzeOriginalColors(project, imageUris.toList(), candidate, reference, ownedOnly)
                     },
                     enabled = selectedCandidate != null && selectedReference != null && !state.loading,
                     modifier = Modifier.fillMaxWidth(),
@@ -222,10 +316,10 @@ internal fun OriginalColorMatchDialog(
                 OutlinedButton(
                     onClick = {
                         val candidate = selectedCandidate ?: return@OutlinedButton
-                        val photo = imageUri ?: return@OutlinedButton
+                        if (imageUris.isEmpty()) return@OutlinedButton
                         val fallback = AiOfficialReference("사용자 사진", "프로젝트 사진", "사용자 사진 기준", "", false, "공식 원작 자료가 아닌 사용자 사진 기준 분석")
                         selectedReference = fallback
-                        viewModel.analyzeOriginalColors(project, photo, candidate, fallback, ownedOnly)
+                        viewModel.analyzeOriginalColors(project, imageUris.toList(), candidate, fallback, ownedOnly)
                     },
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text("공식 자료 없이 사진 자체를 기준으로 분석") }
@@ -278,12 +372,12 @@ internal fun OriginalColorMatchDialog(
                 BoxWithConstraints(Modifier.fillMaxSize().padding(top = 8.dp)) {
                     if (maxWidth >= 700.dp) {
                         Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                            Column(Modifier.weight(.38f).fillMaxHeight().verticalScroll(rememberScrollState())) { photoPane() }
+                            Column(Modifier.weight(.38f).fillMaxHeight().verticalScroll(rememberScrollState())) { photoPane(5) }
                             Column(Modifier.weight(.62f).fillMaxHeight().verticalScroll(rememberScrollState())) { workflowPane() }
                         }
                     } else {
                         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                            photoPane()
+                            photoPane(3)
                             Spacer(Modifier.height(18.dp))
                             workflowPane()
                         }

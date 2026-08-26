@@ -117,6 +117,7 @@ data class OriginalColorMatchUiState(
     val candidates: List<AiSubjectCandidate> = emptyList(),
     val references: List<AiOfficialReference> = emptyList(),
     val plan: AiOriginalColorPlanDraft? = null,
+    val photoWarning: String? = null,
     val notice: String? = null,
     val activeModelLabel: String? = null,
 )
@@ -351,7 +352,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun partComparisons(projectId: Long): Flow<List<PartComparisonEntity>> = partComparisonsDao.observeForProject(projectId)
     fun originalColorPlans(projectId: Long): Flow<List<OriginalColorPlanEntity>> = originalColorPlansDao.observeForProject(projectId)
 
-    fun recognizeOriginalSubject(project: ProjectEntity, imageUri: String) {
+    fun recognizeOriginalSubject(project: ProjectEntity, imageUris: List<String>) {
         aiJob?.cancel()
         aiJob = viewModelScope.launch {
             val selection = aiSettings.selection(AiTaskType.ORIGINAL_COLOR_MATCH)
@@ -362,16 +363,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 return@launch
             }
             try {
-                val photo = preparePaintPhoto(Uri.parse(imageUri))
-                val candidates = OpenAiService(apiKey, selection).recognizeOriginalSubject(
-                    photo.dataUrl,
+                val (photos, failedCount) = prepareOriginalColorPhotos(imageUris)
+                val result = OpenAiService(apiKey, selection).recognizeOriginalSubject(
+                    photos,
                     project.projectType,
                     "이름=${project.name}; 모델=${project.modelName}; 메모=${project.memo.take(200)}",
                 )
                 _originalColorMatchState.value = OriginalColorMatchUiState(
                     stage = "CANDIDATE",
-                    candidates = candidates,
-                    notice = if (candidates.isEmpty()) "대상을 인식하지 못했습니다. 이름을 직접 입력해주세요." else null,
+                    candidates = result.candidates,
+                    photoWarning = result.photoWarning.takeIf { it.isNotBlank() },
+                    notice = when {
+                        result.candidates.isEmpty() -> "대상을 인식하지 못했습니다. 이름을 직접 입력해주세요."
+                        failedCount > 0 -> "사진 ${imageUris.size}장 중 ${failedCount}장을 불러오지 못했지만 나머지 사진으로 분석했습니다."
+                        else -> null
+                    },
                     activeModelLabel = selection.resultLabel,
                 )
             } catch (cancelled: CancellationException) {
@@ -410,7 +416,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun analyzeOriginalColors(
         project: ProjectEntity,
-        imageUri: String,
+        imageUris: List<String>,
         candidate: AiSubjectCandidate,
         reference: AiOfficialReference,
         ownedOnly: Boolean,
@@ -425,16 +431,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 return@launch
             }
             try {
-                val photo = preparePaintPhoto(Uri.parse(imageUri))
+                val (photos, failedCount) = prepareOriginalColorPhotos(imageUris)
                 val plan = OpenAiService(apiKey, selection).analyzeOriginalColors(
-                    photo.dataUrl,
+                    photos,
                     project.projectType,
                     candidate,
                     reference,
                     paints.value,
                     ownedOnly,
                 )
-                _originalColorMatchState.value = _originalColorMatchState.value.copy(loading = false, stage = "PLAN", plan = plan)
+                _originalColorMatchState.value = _originalColorMatchState.value.copy(
+                    loading = false,
+                    stage = "PLAN",
+                    plan = plan,
+                    notice = if (failedCount > 0) "사진 ${imageUris.size}장 중 ${failedCount}장을 불러오지 못했지만 나머지 사진으로 분석했습니다." else null,
+                )
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
@@ -944,6 +955,24 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _paintScanState.value = PaintScanUiState()
         _projectScanState.value = ProjectScanUiState()
         _partsComparisonState.value = PartsComparisonUiState()
+    }
+
+    private suspend fun prepareOriginalColorPhotos(imageUris: List<String>): Pair<List<String>, Int> {
+        val uniqueUris = imageUris.distinct().take(5)
+        require(uniqueUris.isNotEmpty()) { "원작 컬러 매칭 사진을 한 장 이상 선택해주세요." }
+        val dataUrls = mutableListOf<String>()
+        var failedCount = 0
+        uniqueUris.forEach { imageUri ->
+            try {
+                dataUrls += preparePaintPhoto(Uri.parse(imageUri)).dataUrl
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Throwable) {
+                failedCount += 1
+            }
+        }
+        require(dataUrls.isNotEmpty()) { "선택한 사진을 불러올 수 없습니다." }
+        return dataUrls to failedCount
     }
 
     private data class PreparedPaintPhoto(val dataUrl: String, val localHex: String)
