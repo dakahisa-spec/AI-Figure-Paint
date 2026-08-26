@@ -65,6 +65,7 @@ import com.aifigurepaint.app.data.PaintEntity
 import com.aifigurepaint.app.data.ProjectEntity
 import com.aifigurepaint.app.data.ProjectStage
 import com.aifigurepaint.app.data.ProjectStatus
+import com.aifigurepaint.app.data.ProjectType
 import com.aifigurepaint.app.data.ProjectTimelineEntryEntity
 import com.aifigurepaint.app.data.RecipeCardRow
 import com.aifigurepaint.app.data.StockLevel
@@ -594,7 +595,9 @@ internal fun WideProjectStudio(
     onPhotoAnalyze: () -> Unit,
 ) {
     var selectedId by remember { mutableStateOf<Long?>(null) }
-    LaunchedEffect(projects) { if (selectedId == null || projects.none { it.id == selectedId }) selectedId = projects.firstOrNull()?.id }
+    var typeFilter by remember { mutableStateOf<String?>(null) }
+    val filteredProjects = projects.filter { typeFilter == null || it.projectType == typeFilter }
+    LaunchedEffect(filteredProjects) { if (selectedId == null || filteredProjects.none { it.id == selectedId }) selectedId = filteredProjects.firstOrNull()?.id }
     val selected = projects.firstOrNull { it.id == selectedId }
     Row(Modifier.fillMaxSize().padding(8.dp), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
         val panelShape = RoundedCornerShape(10.dp)
@@ -613,8 +616,14 @@ internal fun WideProjectStudio(
                     secondaryAction = "◎ AI 촬영",
                     onSecondary = onScan,
                 )
+                Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    FilterChip(selected = typeFilter == null, onClick = { typeFilter = null }, label = { Text("전체") })
+                    ProjectType.entries.forEach { type ->
+                        FilterChip(selected = typeFilter == type, onClick = { typeFilter = type }, label = { Text(ProjectType.label(type)) })
+                    }
+                }
                 LazyColumn(Modifier.padding(top = 10.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                    items(projects, key = { it.id }) { project ->
+                    items(filteredProjects, key = { it.id }) { project ->
                         OutlinedCard(
                             Modifier.fillMaxWidth().clickable { selectedId = project.id },
                             colors = CardDefaults.outlinedCardColors(if (selectedId == project.id) MaterialTheme.colorScheme.primaryContainer.copy(alpha = .55f) else MaterialTheme.colorScheme.surface),
@@ -625,7 +634,7 @@ internal fun WideProjectStudio(
                                 Column(Modifier.weight(1f)) {
                                     Text(project.name, style = MaterialTheme.typography.titleMedium, maxLines = 1)
                                     Text(project.modelName.ifBlank { "모델명 미입력" }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    Text(ProjectStatus.label(project.status), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                                    Text("${ProjectType.badge(project.projectType)} · ${ProjectStatus.label(project.status)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                                 }
                             }
                         }
@@ -659,16 +668,19 @@ private fun WideProjectDetail(
     val linked by viewModel.projectRecipes(project.id).collectAsState(initial = emptyList())
     val usedPaints by viewModel.projectPaints(project.id).collectAsState(initial = emptyList())
     val timeline by viewModel.projectTimeline(project.id).collectAsState(initial = emptyList())
+    val comparisons by viewModel.partComparisons(project.id).collectAsState(initial = emptyList())
+    val comparisonState by viewModel.partsComparisonState.collectAsState()
     val aiState by viewModel.aiState.collectAsState()
     var question by remember(project.id) { mutableStateOf("") }
     var addTimeline by remember { mutableStateOf(false) }
+    var showPartsComparison by remember { mutableStateOf(false) }
     Row(Modifier.fillMaxSize().padding(12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         Column(Modifier.weight(.48f).fillMaxHeight().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             PhotoPreview(project.photoUri, Modifier.fillMaxWidth().height(190.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(project.name, style = MaterialTheme.typography.headlineMedium)
-                    Text("${project.modelName.ifBlank { "모델명 미입력" }} · ${ProjectStatus.label(project.status)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("${ProjectType.badge(project.projectType)} · ${project.modelName.ifBlank { "모델명 미입력" }} · ${ProjectStatus.label(project.status)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 OutlinedButton(onClick = { onEdit(project.id) }) { Text("수정") }
             }
@@ -681,6 +693,12 @@ private fun WideProjectDetail(
             }
         }
         Column(Modifier.weight(.52f).fillMaxHeight().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SectionTitle("부품 비교", if (project.projectType == ProjectType.MECHANIC) "누락 의심 확인" else "교체 파츠 비교")
+                Button(onClick = { viewModel.clearPartsComparison(); showPartsComparison = true }) { Text("비교") }
+            }
+            comparisons.take(2).forEach { PartsComparisonCard(it) }
+            HorizontalDivider(Modifier.padding(vertical = 4.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 SectionTitle("작업 Timeline", "${timeline.size}개 기록")
                 Button(onClick = { addTimeline = true }) { Text("＋ 기록") }
@@ -728,6 +746,14 @@ private fun WideProjectDetail(
         }
     }
     if (addTimeline) TimelineEntryDialog(project.id, cards, viewModel) { addTimeline = false }
+    if (showPartsComparison) {
+        PartsComparisonDialog(
+            project = project,
+            state = comparisonState,
+            viewModel = viewModel,
+            onDismiss = { viewModel.clearPartsComparison(); showPartsComparison = false },
+        )
+    }
 }
 
 @Composable

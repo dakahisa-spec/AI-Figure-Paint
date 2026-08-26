@@ -48,22 +48,22 @@ jobs:
         run: |
           test -s app/build/outputs/apk/debug/app-debug.apk
           mkdir -p dist
-          cp app/build/outputs/apk/debug/app-debug.apk dist/AI-Figure-Paint-v0.5-Fold8-debug.apk
-          ls -lh dist/AI-Figure-Paint-v0.5-Fold8-debug.apk
+          cp app/build/outputs/apk/debug/app-debug.apk dist/AI-Figure-Paint-v0.6-Fold8-debug.apk
+          ls -lh dist/AI-Figure-Paint-v0.6-Fold8-debug.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AI-Figure-Paint-v0.5-Fold8-APK
-          path: dist/AI-Figure-Paint-v0.5-Fold8-debug.apk
+          name: AI-Figure-Paint-v0.6-Fold8-APK
+          path: dist/AI-Figure-Paint-v0.6-Fold8-debug.apk
           if-no-files-found: error
           retention-days: 90
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.5-build-${{ github.run_number }}
-          name: AI Figure Paint v0.5 Fold8 · Build ${{ github.run_number }}
+          tag_name: v0.6-build-${{ github.run_number }}
+          name: AI Figure Paint v0.6 Fold8 · Build ${{ github.run_number }}
           prerelease: true
           generate_release_notes: false
-          files: dist/AI-Figure-Paint-v0.5-Fold8-debug.apk
+          files: dist/AI-Figure-Paint-v0.6-Fold8-debug.apk

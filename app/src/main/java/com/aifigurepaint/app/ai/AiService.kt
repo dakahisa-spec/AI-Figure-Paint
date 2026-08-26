@@ -69,11 +69,20 @@ data class AiProjectDraft(
     val notes: String,
 )
 
+data class AiPartsComparisonDraft(
+    val changedCount: Int,
+    val missingCount: Int,
+    val movedCount: Int,
+    val summary: String,
+    val findings: List<String>,
+)
+
 interface AiService {
     suspend fun suggestMix(request: AiMixRequest): AiMixSuggestion
     suspend fun advise(question: String, context: String): String
     suspend fun analyzePaintPhotos(imageDataUrls: List<String>): AiPaintDraft
     suspend fun analyzeProjectPhoto(imageDataUrl: String, captureDate: String): AiProjectDraft
+    suspend fun compareParts(baselineImageDataUrl: String, currentImageDataUrl: String): AiPartsComparisonDraft
 }
 
 class OpenAiService(
@@ -381,6 +390,79 @@ class OpenAiService(
             memo = json.optString("memo").trim(),
             confidence = json.optDouble("confidence", 0.0).coerceIn(0.0, 1.0),
             notes = json.optString("notes").trim(),
+        )
+    }
+
+    override suspend fun compareParts(
+        baselineImageDataUrl: String,
+        currentImageDataUrl: String,
+    ): AiPartsComparisonDraft {
+        val content = JSONArray()
+            .put(
+                JSONObject().put("type", "input_text").put(
+                    "text",
+                    """
+                    첫 번째 이미지는 도색 전 기준 꽂이판/부품판 사진이고 두 번째 이미지는 작업 후 현재 사진입니다.
+                    같은 판의 같은 부품을 비교해 위치 변화, 빠진 부품 가능성, 이동된 부품 가능성을 찾아 한국어로 요약하세요.
+                    이것은 100% 판정이 아닌 누락 의심 위치를 찾는 보조 분석입니다. 구도·거리·조명 차이로 확정할 수 없는 내용을 단정하지 말고 반드시 '의심', '가능성', '보입니다'처럼 표현하세요.
+                    좌측 상단, 중앙 하단처럼 사용자가 사진에서 다시 확인할 수 있는 위치 설명을 findings에 넣으세요.
+                    changed_count, missing_count, moved_count는 사진에서 합리적으로 구분되는 의심 위치 수이며 중복 계산하지 마세요.
+                    """.trimIndent(),
+                ),
+            )
+            .put(JSONObject().put("type", "input_text").put("text", "기준 사진"))
+            .put(JSONObject().put("type", "input_image").put("image_url", baselineImageDataUrl).put("detail", "high"))
+            .put(JSONObject().put("type", "input_text").put("text", "현재 사진"))
+            .put(JSONObject().put("type", "input_image").put("image_url", currentImageDataUrl).put("detail", "high"))
+        val properties = JSONObject()
+            .put("changed_count", JSONObject().put("type", "integer").put("minimum", 0))
+            .put("missing_count", JSONObject().put("type", "integer").put("minimum", 0))
+            .put("moved_count", JSONObject().put("type", "integer").put("minimum", 0))
+            .put("summary", JSONObject().put("type", "string"))
+            .put(
+                "findings",
+                JSONObject()
+                    .put("type", "array")
+                    .put("maxItems", 8)
+                    .put("items", JSONObject().put("type", "string")),
+            )
+        val body = JSONObject()
+            .put("model", model)
+            .put("store", false)
+            .put("reasoning", JSONObject().put("effort", "medium"))
+            .put(
+                "input",
+                JSONArray().put(JSONObject().put("role", "user").put("content", content)),
+            )
+            .put(
+                "text",
+                JSONObject().put(
+                    "format",
+                    JSONObject()
+                        .put("type", "json_schema")
+                        .put("name", "parts_comparison")
+                        .put("strict", true)
+                        .put(
+                            "schema",
+                            JSONObject()
+                                .put("type", "object")
+                                .put("additionalProperties", false)
+                                .put("required", JSONArray(listOf("changed_count", "missing_count", "moved_count", "summary", "findings")))
+                                .put("properties", properties),
+                        ),
+                ),
+            )
+        val json = JSONObject(extractOutputText(post(body)))
+        val findings = buildList {
+            val rows = json.optJSONArray("findings") ?: JSONArray()
+            for (index in 0 until rows.length()) rows.optString(index).trim().takeIf { it.isNotBlank() }?.let(::add)
+        }
+        return AiPartsComparisonDraft(
+            changedCount = json.optInt("changed_count", 0).coerceAtLeast(0),
+            missingCount = json.optInt("missing_count", 0).coerceAtLeast(0),
+            movedCount = json.optInt("moved_count", 0).coerceAtLeast(0),
+            summary = json.optString("summary").trim(),
+            findings = findings,
         )
     }
 

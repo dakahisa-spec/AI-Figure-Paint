@@ -233,6 +233,15 @@ interface TimelineDao {
     @Delete suspend fun delete(entry: ProjectTimelineEntryEntity)
 }
 
+@Dao
+interface PartComparisonDao {
+    @Query("SELECT * FROM part_comparisons WHERE projectId = :projectId ORDER BY comparisonDate DESC, createdAt DESC")
+    fun observeForProject(projectId: Long): Flow<List<PartComparisonEntity>>
+
+    @Insert suspend fun insert(comparison: PartComparisonEntity): Long
+    @Delete suspend fun delete(comparison: PartComparisonEntity)
+}
+
 @Database(
     entities = [
         PaintEntity::class,
@@ -244,8 +253,9 @@ interface TimelineDao {
         RecipeVersionEntity::class,
         TestResultEntity::class,
         ProjectTimelineEntryEntity::class,
+        PartComparisonEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -256,6 +266,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun versionDao(): VersionDao
     abstract fun testResultDao(): TestResultDao
     abstract fun timelineDao(): TimelineDao
+    abstract fun partComparisonDao(): PartComparisonDao
 
     companion object {
         @Volatile private var instance: AppDatabase? = null
@@ -265,7 +276,7 @@ abstract class AppDatabase : RoomDatabase() {
                 context.applicationContext,
                 AppDatabase::class.java,
                 "ai_figure_paint.db",
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).addCallback(object : Callback() {
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).addCallback(object : Callback() {
                 override fun onCreate(db: SupportSQLiteDatabase) {
                     super.onCreate(db)
                     val now = System.currentTimeMillis()
@@ -415,6 +426,33 @@ abstract class AppDatabase : RoomDatabase() {
                 )
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_test_results_recipeId ON test_results(recipeId)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_test_results_recipeVersionId ON test_results(recipeVersionId)")
+            }
+        }
+
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE projects ADD COLUMN projectType TEXT NOT NULL DEFAULT 'FIGURE'")
+                db.execSQL("ALTER TABLE projects ADD COLUMN partsBaselinePhotoUri TEXT")
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS part_comparisons (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        projectId INTEGER NOT NULL,
+                        comparisonDate INTEGER NOT NULL,
+                        baselinePhotoUri TEXT NOT NULL,
+                        currentPhotoUri TEXT NOT NULL,
+                        changedCount INTEGER NOT NULL,
+                        missingCount INTEGER NOT NULL,
+                        movedCount INTEGER NOT NULL,
+                        summary TEXT NOT NULL,
+                        findings TEXT NOT NULL,
+                        modelLabel TEXT NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        FOREIGN KEY(projectId) REFERENCES projects(id) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_part_comparisons_projectId ON part_comparisons(projectId)")
             }
         }
     }

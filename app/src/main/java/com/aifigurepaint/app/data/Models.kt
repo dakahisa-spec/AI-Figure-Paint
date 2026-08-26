@@ -32,9 +32,38 @@ data class ProjectEntity(
     val memo: String = "",
     @ColumnInfo(defaultValue = "0") val startDate: Long = 0,
     @ColumnInfo(defaultValue = "'PLANNED'") val status: String = ProjectStatus.PLANNED,
+    @ColumnInfo(defaultValue = "'FIGURE'") val projectType: String = ProjectType.FIGURE,
     val photoUri: String? = null,
+    val partsBaselinePhotoUri: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
+)
+
+@Entity(
+    tableName = "part_comparisons",
+    foreignKeys = [
+        ForeignKey(
+            entity = ProjectEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["projectId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+    indices = [Index("projectId")],
+)
+data class PartComparisonEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val projectId: Long,
+    val comparisonDate: Long,
+    val baselinePhotoUri: String,
+    val currentPhotoUri: String,
+    val changedCount: Int,
+    val missingCount: Int,
+    val movedCount: Int,
+    val summary: String,
+    val findings: String,
+    val modelLabel: String,
+    val createdAt: Long = System.currentTimeMillis(),
 )
 
 @Entity(
@@ -282,6 +311,15 @@ object ProjectStatus {
         COMPLETED -> "완료"
         else -> "예정"
     }
+}
+
+object ProjectType {
+    const val FIGURE = "FIGURE"
+    const val MECHANIC = "MECHANIC"
+    val entries = listOf(FIGURE, MECHANIC)
+
+    fun label(value: String): String = if (value == MECHANIC) "메카닉" else "피규어"
+    fun badge(value: String): String = if (value == MECHANIC) "Mechanic" else "Figure"
 }
 
 object PhotoOwner {

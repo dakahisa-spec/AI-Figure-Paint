@@ -14,6 +14,7 @@ import com.aifigurepaint.app.ai.AiMixSuggestion
 import com.aifigurepaint.app.ai.AiModelMode
 import com.aifigurepaint.app.ai.AiTaskType
 import com.aifigurepaint.app.ai.AiPaintDraft
+import com.aifigurepaint.app.ai.AiPartsComparisonDraft
 import com.aifigurepaint.app.ai.AiProjectDraft
 import com.aifigurepaint.app.ai.AiSettingsStore
 import com.aifigurepaint.app.ai.LocalColorEngine
@@ -25,6 +26,7 @@ import com.aifigurepaint.app.data.ExcelImportPreview
 import com.aifigurepaint.app.data.MixRecipeEntity
 import com.aifigurepaint.app.data.MixRecipeItemEntity
 import com.aifigurepaint.app.data.PaintEntity
+import com.aifigurepaint.app.data.PartComparisonEntity
 import com.aifigurepaint.app.data.PhotoEntity
 import com.aifigurepaint.app.data.PhotoOwner
 import com.aifigurepaint.app.data.ProjectEntity
@@ -89,6 +91,13 @@ data class ExcelUiState(
     val notice: String? = null,
 )
 
+data class PartsComparisonUiState(
+    val loading: Boolean = false,
+    val draft: AiPartsComparisonDraft? = null,
+    val notice: String? = null,
+    val activeModelLabel: String? = null,
+)
+
 class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val db = AppDatabase.get(application)
     private val paintsDao = db.paintDao()
@@ -97,6 +106,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val photosDao = db.photoDao()
     private val versionsDao = db.versionDao()
     private val timelineDao = db.timelineDao()
+    private val partComparisonsDao = db.partComparisonDao()
     private val testResultsDao = db.testResultDao()
     private val excel = ExcelBackupService(application, db)
     private val aiSettings = AiSettingsStore(application)
@@ -124,6 +134,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val testAdjustmentState = _testAdjustmentState.asStateFlow()
     private val _excelState = MutableStateFlow(ExcelUiState())
     val excelState = _excelState.asStateFlow()
+    private val _partsComparisonState = MutableStateFlow(PartsComparisonUiState())
+    val partsComparisonState = _partsComparisonState.asStateFlow()
 
     fun clearMessage() { _message.value = null }
     fun clearAiResult() { _aiState.value = AiUiState() }
@@ -227,6 +239,82 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun recipeVersions(recipeId: Long): Flow<List<RecipeVersionEntity>> = versionsDao.observeForRecipe(recipeId)
     fun testResults(recipeId: Long): Flow<List<TestResultEntity>> = testResultsDao.observeForRecipe(recipeId)
     fun projectTimeline(projectId: Long): Flow<List<ProjectTimelineEntryEntity>> = timelineDao.observeForProject(projectId)
+    fun partComparisons(projectId: Long): Flow<List<PartComparisonEntity>> = partComparisonsDao.observeForProject(projectId)
+
+    fun savePartsBaseline(project: ProjectEntity, uri: String) = viewModelScope.launch {
+        runCatching {
+            projectsDao.update(project.copy(partsBaselinePhotoUri = uri, updatedAt = System.currentTimeMillis()))
+        }.onSuccess { _message.value = "부품 비교 기준 사진을 저장했습니다." }
+            .onFailure { _message.value = "기준 사진을 저장하지 못했습니다." }
+    }
+
+    fun compareProjectParts(baselineUri: String, currentUri: String) {
+        aiJob?.cancel()
+        aiJob = viewModelScope.launch {
+            val selection = aiSettings.selection(AiTaskType.PARTS_COMPARE)
+            _partsComparisonState.value = PartsComparisonUiState(loading = true, activeModelLabel = selection.resultLabel)
+            val apiKey = aiSettings.readApiKey()
+            if (apiKey.isBlank()) {
+                _partsComparisonState.value = PartsComparisonUiState(
+                    notice = "AI 연결을 사용할 수 없습니다. 설정에서 API 키를 등록해주세요.",
+                    activeModelLabel = selection.resultLabel,
+                )
+                return@launch
+            }
+            try {
+                val baseline = preparePaintPhoto(Uri.parse(baselineUri))
+                val current = preparePaintPhoto(Uri.parse(currentUri))
+                val draft = OpenAiService(apiKey, selection).compareParts(baseline.dataUrl, current.dataUrl)
+                _partsComparisonState.value = PartsComparisonUiState(draft = draft, activeModelLabel = selection.resultLabel)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                _partsComparisonState.value = PartsComparisonUiState(
+                    notice = "부품 비교를 완료하지 못했습니다: ${error.message.orEmpty().take(100)}",
+                    activeModelLabel = selection.resultLabel,
+                )
+            }
+        }
+    }
+
+    fun savePartComparison(
+        projectId: Long,
+        baselineUri: String,
+        currentUri: String,
+        draft: AiPartsComparisonDraft,
+        modelLabel: String,
+        onSaved: () -> Unit = {},
+    ) = viewModelScope.launch {
+        runCatching {
+            partComparisonsDao.insert(
+                PartComparisonEntity(
+                    projectId = projectId,
+                    comparisonDate = System.currentTimeMillis(),
+                    baselinePhotoUri = baselineUri,
+                    currentPhotoUri = currentUri,
+                    changedCount = draft.changedCount,
+                    missingCount = draft.missingCount,
+                    movedCount = draft.movedCount,
+                    summary = draft.summary,
+                    findings = draft.findings.joinToString("\n"),
+                    modelLabel = modelLabel,
+                ),
+            )
+        }.onSuccess {
+            _message.value = "부품 비교 기록을 저장했습니다."
+            onSaved()
+        }.onFailure { _message.value = "부품 비교 기록을 저장하지 못했습니다." }
+    }
+
+    fun deletePartComparison(comparison: PartComparisonEntity) = viewModelScope.launch {
+        runCatching { partComparisonsDao.delete(comparison) }
+            .onFailure { _message.value = "부품 비교 기록을 삭제하지 못했습니다." }
+    }
+
+    fun clearPartsComparison() {
+        aiJob?.cancel()
+        _partsComparisonState.value = PartsComparisonUiState()
+    }
 
     fun saveTestResult(
         result: TestResultEntity,
@@ -621,6 +709,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _aiState.value = AiUiState()
         _paintScanState.value = PaintScanUiState()
         _projectScanState.value = ProjectScanUiState()
+        _partsComparisonState.value = PartsComparisonUiState()
     }
 
     private data class PreparedPaintPhoto(val dataUrl: String, val localHex: String)
