@@ -72,7 +72,7 @@ data class AiProjectDraft(
 interface AiService {
     suspend fun suggestMix(request: AiMixRequest): AiMixSuggestion
     suspend fun advise(question: String, context: String): String
-    suspend fun analyzePaintPhoto(imageDataUrl: String): AiPaintDraft
+    suspend fun analyzePaintPhotos(imageDataUrls: List<String>): AiPaintDraft
     suspend fun analyzeProjectPhoto(imageDataUrl: String, captureDate: String): AiProjectDraft
 }
 
@@ -185,7 +185,8 @@ class OpenAiService(
         return extractOutputText(post(body)).trim()
     }
 
-    override suspend fun analyzePaintPhoto(imageDataUrl: String): AiPaintDraft {
+    override suspend fun analyzePaintPhotos(imageDataUrls: List<String>): AiPaintDraft {
+        require(imageDataUrls.size in 1..3) { "도료 사진은 1장 이상 3장 이하로 선택해주세요." }
         val content = JSONArray()
             .put(
                 JSONObject()
@@ -193,21 +194,25 @@ class OpenAiService(
                     .put(
                         "text",
                         """
-                        이 사진은 피규어·모형 도색용 도료 용기 또는 라벨입니다.
+                        첨부된 모든 이미지는 동일한 피규어·모형용 도료 한 병을 서로 다른 각도에서 촬영한 사진입니다.
+                        각 이미지의 정보를 서로 보완해 가장 신뢰도 높은 하나의 제품 정보를 작성하세요.
                         사진에 실제로 보이는 정보만 근거로 브랜드, 시리즈, 제품 코드, 제품명과 한글 제품명을 판독하세요.
-                        불명확한 항목은 추측하지 말고 빈 문자열로 두세요.
-                        color_hex는 라벨의 색상칩이나 내용물에서 추정되는 대표 도료색을 #RRGGBB로 반환하세요.
-                        notes에는 사용자가 저장 전 확인해야 할 불확실한 부분을 한국어 한두 문장으로 적으세요.
+                        이미지 사이 정보가 충돌하거나 흐려서 확정할 수 없으면 임의로 선택하지 말고 해당 필드는 빈 문자열로 두며 notes에 가능한 값과 확인 필요 사항을 적으세요.
+                        보이지 않는 제품 정보는 추측해 만들지 마세요.
+                        color_hex는 병 플라스틱이나 배경색을 그대로 고르지 말고, 라벨 색상 정보·실제 도료가 보이는 부분·제품명과 여러 이미지를 종합해 추정한 대표 도료색을 #RRGGBB로 반환하세요.
+                        notes에는 사용자가 저장 전 확인해야 할 불확실한 부분과 대표색이 AI 추정값임을 한국어 한두 문장으로 적으세요.
                         이 결과는 DB에 자동 저장되지 않는 검토용 초안입니다.
                         """.trimIndent(),
                     ),
             )
-            .put(
+        imageDataUrls.forEach { imageDataUrl ->
+            content.put(
                 JSONObject()
                     .put("type", "input_image")
                     .put("image_url", imageDataUrl)
                     .put("detail", "high"),
             )
+        }
         val properties = JSONObject()
             .put("brand", JSONObject().put("type", "string"))
             .put("series", JSONObject().put("type", "string"))

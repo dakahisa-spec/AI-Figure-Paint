@@ -448,22 +448,23 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _message.value = "저장된 AI API 키를 삭제했습니다."
     }
 
-    fun analyzePaintPhoto(uri: Uri) {
+    fun analyzePaintPhotos(uris: List<Uri>) {
+        require(uris.size in 1..3) { "도료 사진은 1장 이상 3장 이하로 선택해주세요." }
         aiJob?.cancel()
         aiJob = viewModelScope.launch {
             _paintScanState.value = PaintScanUiState(loading = true)
             var fallbackDraft: AiPaintDraft? = null
             try {
-                val prepared = preparePaintPhoto(uri)
+                val prepared = uris.map { preparePaintPhoto(it) }
                 val localDraft = AiPaintDraft(
                     brand = "",
                     series = "",
                     productCode = null,
                     name = "",
                     koreanName = "",
-                    colorHex = prepared.localHex,
+                    colorHex = averageHex(prepared.map { it.localHex }),
                     confidence = 0.0,
-                    notes = "로컬에서 추출한 대표색입니다. 제품 정보는 사진을 보며 직접 확인해주세요.",
+                    notes = "선택한 ${prepared.size}장 사진에서 로컬로 추출한 대표색입니다. 제품 정보는 사진을 보며 직접 확인해주세요.",
                 )
                 fallbackDraft = localDraft
                 val apiKey = aiSettings.readApiKey()
@@ -473,7 +474,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         notice = "GPT-5.6 연결 설정이 없어 로컬 대표색만 추출했습니다.",
                     )
                 } else {
-                    val result = OpenAiService(apiKey, aiSettings.selection(AiTaskType.PAINT_SCAN)).analyzePaintPhoto(prepared.dataUrl)
+                    val result = OpenAiService(apiKey, aiSettings.selection(AiTaskType.PAINT_SCAN))
+                        .analyzePaintPhotos(prepared.map { it.dataUrl })
                     _paintScanState.value = PaintScanUiState(draft = result)
                 }
             } catch (_: CancellationException) {
@@ -674,6 +676,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (count == 0L) return "#808080"
         return "#%02X%02X%02X".format((red / count).toInt(), (green / count).toInt(), (blue / count).toInt())
+    }
+
+    private fun averageHex(colors: List<String>): String {
+        val parsed = colors.mapNotNull { color -> runCatching { Color.parseColor(color) }.getOrNull() }
+        if (parsed.isEmpty()) return "#808080"
+        return "#%02X%02X%02X".format(
+            parsed.sumOf { Color.red(it) } / parsed.size,
+            parsed.sumOf { Color.green(it) } / parsed.size,
+            parsed.sumOf { Color.blue(it) } / parsed.size,
+        )
     }
 
     fun saveAiSuggestion(

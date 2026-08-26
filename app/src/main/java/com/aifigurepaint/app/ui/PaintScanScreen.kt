@@ -6,6 +6,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -39,6 +40,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -67,7 +70,9 @@ internal fun PaintScanScreen(
     val configured by viewModel.aiConfigured.collectAsState()
     val modelMode by viewModel.aiModelMode.collectAsState()
     val model = AiModelRouter.resolve(AiTaskType.PAINT_SCAN, modelMode).resultLabel
-    var selectedUri by remember { mutableStateOf<Uri?>(null) }
+    val photoUris = remember { mutableStateListOf<Uri>() }
+    var selectedPhotoIndex by remember { mutableIntStateOf(0) }
+    var pendingReplaceIndex by remember { mutableStateOf<Int?>(null) }
     var cameraUri by remember { mutableStateOf<Uri?>(null) }
     var brand by remember { mutableStateOf("") }
     var series by remember { mutableStateOf("") }
@@ -91,16 +96,56 @@ internal fun PaintScanScreen(
 
     val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
         if (success) {
-            resetDraft()
-            selectedUri = cameraUri
+            cameraUri?.let { uri ->
+                resetDraft()
+                val replaceIndex = pendingReplaceIndex
+                if (replaceIndex != null && replaceIndex in photoUris.indices) {
+                    photoUris[replaceIndex] = uri
+                    selectedPhotoIndex = replaceIndex
+                } else if (photoUris.size < 3) {
+                    photoUris += uri
+                    selectedPhotoIndex = photoUris.lastIndex
+                }
+            }
         }
+        pendingReplaceIndex = null
+        cameraUri = null
     }
     val gallery = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             persistPhotoPermission(context, uri)
             resetDraft()
-            selectedUri = uri
+            val replaceIndex = pendingReplaceIndex
+            if (replaceIndex != null && replaceIndex in photoUris.indices) {
+                photoUris[replaceIndex] = uri
+                selectedPhotoIndex = replaceIndex
+            } else if (photoUris.size < 3) {
+                photoUris += uri
+                selectedPhotoIndex = photoUris.lastIndex
+            }
         }
+        pendingReplaceIndex = null
+    }
+
+    fun launchCamera(replaceIndex: Int? = null) {
+        if (replaceIndex == null && photoUris.size >= 3) return
+        pendingReplaceIndex = replaceIndex
+        val uri = createPaintScanUri(context)
+        cameraUri = uri
+        camera.launch(uri)
+    }
+
+    fun launchGallery(replaceIndex: Int? = null) {
+        if (replaceIndex == null && photoUris.size >= 3) return
+        pendingReplaceIndex = replaceIndex
+        gallery.launch(arrayOf("image/*"))
+    }
+
+    fun deletePhoto(index: Int) {
+        if (index !in photoUris.indices) return
+        resetDraft()
+        photoUris.removeAt(index)
+        selectedPhotoIndex = selectedPhotoIndex.coerceAtMost((photoUris.size - 1).coerceAtLeast(0))
     }
 
     LaunchedEffect(scanState.draft) {
@@ -124,18 +169,19 @@ internal fun PaintScanScreen(
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
                     PaintCapturePanel(
-                        selectedUri = selectedUri,
+                        photoUris = photoUris,
+                        selectedIndex = selectedPhotoIndex,
                         configured = configured,
                         model = model,
                         loading = scanState.loading,
                         notice = scanState.notice,
-                        onCamera = {
-                            val uri = createPaintScanUri(context)
-                            cameraUri = uri
-                            camera.launch(uri)
-                        },
-                        onGallery = { gallery.launch(arrayOf("image/*")) },
-                        onAnalyze = { selectedUri?.let(viewModel::analyzePaintPhoto) },
+                        onSelect = { selectedPhotoIndex = it },
+                        onDelete = ::deletePhoto,
+                        onCamera = { launchCamera() },
+                        onGallery = { launchGallery() },
+                        onReplaceCamera = { launchCamera(selectedPhotoIndex) },
+                        onReplaceGallery = { launchGallery(selectedPhotoIndex) },
+                        onAnalyze = { viewModel.analyzePaintPhotos(photoUris.toList()) },
                         onSettings = onSettings,
                         modifier = Modifier.weight(.43f).fillMaxHeight(),
                     )
@@ -185,18 +231,19 @@ internal fun PaintScanScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     PaintCapturePanel(
-                        selectedUri = selectedUri,
+                        photoUris = photoUris,
+                        selectedIndex = selectedPhotoIndex,
                         configured = configured,
                         model = model,
                         loading = scanState.loading,
                         notice = scanState.notice,
-                        onCamera = {
-                            val uri = createPaintScanUri(context)
-                            cameraUri = uri
-                            camera.launch(uri)
-                        },
-                        onGallery = { gallery.launch(arrayOf("image/*")) },
-                        onAnalyze = { selectedUri?.let(viewModel::analyzePaintPhoto) },
+                        onSelect = { selectedPhotoIndex = it },
+                        onDelete = ::deletePhoto,
+                        onCamera = { launchCamera() },
+                        onGallery = { launchGallery() },
+                        onReplaceCamera = { launchCamera(selectedPhotoIndex) },
+                        onReplaceGallery = { launchGallery(selectedPhotoIndex) },
+                        onAnalyze = { viewModel.analyzePaintPhotos(photoUris.toList()) },
                         onSettings = onSettings,
                     )
                     PaintDraftForm(
@@ -247,17 +294,24 @@ internal fun PaintScanScreen(
 
 @Composable
 private fun PaintCapturePanel(
-    selectedUri: Uri?,
+    photoUris: List<Uri>,
+    selectedIndex: Int,
     configured: Boolean,
     model: String,
     loading: Boolean,
     notice: String?,
+    onSelect: (Int) -> Unit,
+    onDelete: (Int) -> Unit,
     onCamera: () -> Unit,
     onGallery: () -> Unit,
+    onReplaceCamera: () -> Unit,
+    onReplaceGallery: () -> Unit,
     onAnalyze: () -> Unit,
     onSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val selectedUri = photoUris.getOrNull(selectedIndex)
+    val canAddPhoto = photoUris.size < 3 && !loading
     Card(
         modifier = modifier.fillMaxWidth().border(1.dp, StudioBorder, RoundedCornerShape(12.dp)),
         shape = RoundedCornerShape(12.dp),
@@ -266,9 +320,12 @@ private fun PaintCapturePanel(
     ) {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("PAINT LABEL SCAN", style = MaterialTheme.typography.labelMedium, color = StudioTeal, fontWeight = FontWeight.Bold)
-            Text("사진 한 장으로\n도료 정보를 정리합니다.", style = MaterialTheme.typography.headlineMedium, color = StudioNavy)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("여러 각도에서\n도료 정보를 확인합니다.", modifier = Modifier.weight(1f), style = MaterialTheme.typography.headlineMedium, color = StudioNavy)
+                Text("${photoUris.size} / 3장", style = MaterialTheme.typography.titleMedium, color = StudioTeal, fontWeight = FontWeight.Bold)
+            }
             Text(
-                "라벨을 정면에서 선명하게 촬영하면 브랜드·코드·제품명·대표색을 $model 검토 초안으로 만듭니다.",
+                "정면 라벨, 제품 코드, 제품명이 보이는 측면·뒷면을 추가하면 $model 분석 정확도가 높아집니다. 1장만으로도 분석할 수 있습니다.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -285,16 +342,49 @@ private fun PaintCapturePanel(
                 }
             } else {
                 PhotoPreview(selectedUri.toString(), Modifier.fillMaxWidth().height(218.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    photoUris.forEachIndexed { index, uri ->
+                        Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Box(
+                                Modifier.fillMaxWidth().height(78.dp)
+                                    .border(
+                                        width = if (index == selectedIndex) 2.dp else 1.dp,
+                                        color = if (index == selectedIndex) StudioTeal else StudioBorder,
+                                        shape = RoundedCornerShape(8.dp),
+                                    )
+                                    .clickable { onSelect(index) },
+                            ) {
+                                PhotoPreview(uri.toString(), Modifier.fillMaxSize())
+                                Text(
+                                    "사진 ${index + 1}",
+                                    modifier = Modifier.align(Alignment.BottomStart)
+                                        .background(MaterialTheme.colorScheme.surface.copy(alpha = .88f), RoundedCornerShape(topEnd = 6.dp))
+                                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = StudioNavy,
+                                )
+                            }
+                        }
+                    }
+                }
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedButton(onClick = onReplaceCamera, enabled = !loading, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("선택 사진 촬영 교체") }
+                    OutlinedButton(onClick = onReplaceGallery, enabled = !loading, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("갤러리 교체") }
+                    TextButton(onClick = { onDelete(selectedIndex) }, enabled = !loading) { Text("삭제", color = MaterialTheme.colorScheme.error) }
+                }
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onCamera, modifier = Modifier.weight(1f).height(42.dp), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("사진 촬영") }
-                OutlinedButton(onClick = onGallery, modifier = Modifier.weight(1f).height(42.dp), contentPadding = PaddingValues(horizontal = 8.dp)) {
-                    Text("갤러리", color = StudioNavy)
+                Button(onClick = onCamera, enabled = canAddPhoto, modifier = Modifier.weight(1f).height(42.dp), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("사진 촬영 추가") }
+                OutlinedButton(onClick = onGallery, enabled = canAddPhoto, modifier = Modifier.weight(1f).height(42.dp), contentPadding = PaddingValues(horizontal = 8.dp)) {
+                    Text("갤러리 추가", color = StudioNavy)
                 }
+            }
+            if (photoUris.size == 3) {
+                Text("최대 3장까지 등록할 수 있습니다.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Button(
                 onClick = onAnalyze,
-                enabled = selectedUri != null && !loading,
+                enabled = photoUris.isNotEmpty() && !loading,
                 modifier = Modifier.fillMaxWidth().height(46.dp),
                 colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = StudioTeal, contentColor = androidx.compose.ui.graphics.Color.White),
             ) {
@@ -303,6 +393,13 @@ private fun PaintCapturePanel(
                     Spacer(Modifier.size(8.dp))
                 }
                 Text(if (loading) "분석 중" else "GPT-5.6으로 분석")
+            }
+            if (photoUris.isNotEmpty()) {
+                Text(
+                    "등록된 사진 ${photoUris.size}장을 한 번의 AI 요청으로 함께 분석합니다.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(
