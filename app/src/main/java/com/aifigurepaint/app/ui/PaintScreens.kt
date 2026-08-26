@@ -29,6 +29,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
@@ -39,17 +40,22 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.aifigurepaint.app.AppViewModel
+import com.aifigurepaint.app.ProductCodeSearchUiState
+import com.aifigurepaint.app.ai.AiProductCodeResult
 import com.aifigurepaint.app.data.PaintEntity
 import com.aifigurepaint.app.data.StockLevel
 
@@ -60,16 +66,21 @@ private enum class PaintFilter(val label: String) {
 @Composable
 internal fun PaintListScreen(
     paints: List<PaintEntity>,
+    viewModel: AppViewModel,
     onAdd: () -> Unit,
     onScan: () -> Unit,
     onOpen: (Long) -> Unit,
     onSetStock: (PaintEntity, Int) -> Unit,
     onToggleFavorite: (PaintEntity) -> Unit,
 ) {
+    val context = LocalContext.current
+    val productCodeState by viewModel.productCodeSearchState.collectAsState()
     var query by remember { mutableStateOf("") }
     var filter by remember { mutableStateOf(PaintFilter.ALL) }
     var brand by remember { mutableStateOf("전체 브랜드") }
     var brandMenu by remember { mutableStateOf(false) }
+    var sortMode by remember { mutableStateOf(PaintSortPreferences.read(context)) }
+    var showBatchSearch by remember { mutableStateOf(false) }
     val brands = listOf("전체 브랜드") + paints.map { it.brand }.distinct().sorted()
     val matches = paints.filter { paint ->
         val q = query.trim()
@@ -85,7 +96,13 @@ internal fun PaintListScreen(
         val brandMatch = brand == "전체 브랜드" || paint.brand == brand
         queryMatch && filterMatch && brandMatch
     }
-    val filtered = if (filter == PaintFilter.RECENT) matches.sortedByDescending { it.lastUsedAt ?: 0L }.take(20) else matches
+    val recentAware = if (filter == PaintFilter.RECENT) {
+        matches.sortedByDescending { it.lastUsedAt ?: 0L }.take(20)
+    } else {
+        matches
+    }
+    val filtered = sortPaints(recentAware, sortMode)
+    val missingCodes = paints.filter { it.productCode.isNullOrBlank() }
 
     Column(Modifier.fillMaxSize().padding(horizontal = 14.dp)) {
         Row(Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 9.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -122,6 +139,25 @@ internal fun PaintListScreen(
                     }
                 }
             }
+            item {
+                PaintSortMenu(sortMode) { selected ->
+                    sortMode = selected
+                    PaintSortPreferences.save(context, selected)
+                }
+            }
+            if (missingCodes.isNotEmpty()) {
+                item {
+                    FilterChip(
+                        selected = false,
+                        onClick = {
+                            viewModel.clearProductCodeSearch()
+                            showBatchSearch = true
+                            viewModel.searchProductCodes(missingCodes.take(5))
+                        },
+                        label = { Text("미확인 번호 찾기") },
+                    )
+                }
+            }
         }
         if (filtered.isEmpty()) {
             EmptyCard("조건에 맞는 도료가 없습니다.")
@@ -146,6 +182,23 @@ internal fun PaintListScreen(
                 }
             }
         }
+    }
+    if (showBatchSearch) {
+        ProductCodeSearchDialog(
+            paints = missingCodes.take(5),
+            state = productCodeState,
+            onSearch = { viewModel.searchProductCodes(missingCodes.take(5)) },
+            onApply = { selected ->
+                viewModel.applyProductCodes(selected) {
+                    viewModel.clearProductCodeSearch()
+                    showBatchSearch = false
+                }
+            },
+            onDismiss = {
+                viewModel.clearProductCodeSearch()
+                showBatchSearch = false
+            },
+        )
     }
 }
 
@@ -172,7 +225,7 @@ private fun PaintCard(
                 val subName = paint.koreanName.ifBlank { paint.series }
                 Text(subName, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
                 Text(
-                    listOfNotNull(paint.brand, paint.productCode).joinToString(" · "),
+                    listOf(paint.brand, paint.productCode?.takeIf { it.isNotBlank() } ?: "상품번호 미확인").joinToString(" · "),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -203,6 +256,7 @@ private fun PaintCard(
 
 @Composable
 internal fun PaintEditorScreen(paint: PaintEntity?, viewModel: AppViewModel, onBack: () -> Unit) {
+    val productCodeState by viewModel.productCodeSearchState.collectAsState()
     var brand by remember(paint?.id) { mutableStateOf(paint?.brand ?: "Mr.Color") }
     var series by remember(paint?.id) { mutableStateOf(paint?.series ?: "Mr.Color") }
     var code by remember(paint?.id) { mutableStateOf(paint?.productCode.orEmpty()) }
@@ -213,6 +267,7 @@ internal fun PaintEditorScreen(paint: PaintEntity?, viewModel: AppViewModel, onB
     var favorite by remember(paint?.id) { mutableStateOf(paint?.favorite ?: false) }
     var memo by remember(paint?.id) { mutableStateOf(paint?.memo.orEmpty()) }
     var deleteConfirm by remember { mutableStateOf(false) }
+    var showProductCodeSearch by remember { mutableStateOf(false) }
     val selectedColor = parseHexColor(hex, paint?.colorValue ?: 0xFFDDDDDD.toInt())
 
     Scaffold(topBar = { EditorHeader(if (paint == null) "도료 추가" else "도료 수정", onBack) }) { padding ->
@@ -233,6 +288,16 @@ internal fun PaintEditorScreen(paint: PaintEntity?, viewModel: AppViewModel, onB
                 OutlinedTextField(series, { series = it }, Modifier.weight(1f), label = { Text("시리즈") }, singleLine = true)
             }
             OutlinedTextField(code, { code = it }, Modifier.fillMaxWidth(), label = { Text("제품 코드") }, singleLine = true)
+            if (paint != null) {
+                OutlinedButton(
+                    onClick = {
+                        viewModel.clearProductCodeSearch()
+                        showProductCodeSearch = true
+                        viewModel.searchProductCodes(listOf(paint.copy(productCode = code.trim().ifBlank { null })))
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text(if (code.isBlank()) "AI로 상품번호 찾기" else "AI 검색 결과와 현재 번호 비교") }
+            }
             OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("제품명") }, singleLine = true)
             OutlinedTextField(koreanName, { koreanName = it }, Modifier.fillMaxWidth(), label = { Text("한글 이름") }, singleLine = true)
             OutlinedTextField(
@@ -287,6 +352,164 @@ internal fun PaintEditorScreen(paint: PaintEntity?, viewModel: AppViewModel, onB
             dismissButton = { TextButton(onClick = { deleteConfirm = false }) { Text("취소") } },
         )
     }
+    if (showProductCodeSearch && paint != null) {
+        val searchPaint = paint.copy(
+            brand = brand.trim(),
+            series = series.trim(),
+            productCode = code.trim().ifBlank { null },
+            name = name.trim(),
+            koreanName = koreanName.trim(),
+            colorValue = selectedColor,
+            memo = memo.trim(),
+        )
+        ProductCodeSearchDialog(
+            paints = listOf(searchPaint),
+            state = productCodeState,
+            onSearch = { viewModel.searchProductCodes(listOf(searchPaint)) },
+            onApply = { selected ->
+                selected[paint.id]?.let { foundCode ->
+                    viewModel.applyProductCode(searchPaint, foundCode) {
+                        code = foundCode
+                        viewModel.clearProductCodeSearch()
+                        showProductCodeSearch = false
+                    }
+                }
+            },
+            onDismiss = {
+                viewModel.clearProductCodeSearch()
+                showProductCodeSearch = false
+            },
+        )
+    }
+}
+
+@Composable
+internal fun PaintSortMenu(mode: PaintSortMode, onSelected: (PaintSortMode) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        FilterChip(
+            selected = mode != PaintSortMode.DEFAULT,
+            onClick = { expanded = true },
+            label = { Text("정렬 · ${mode.label}") },
+        )
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            PaintSortMode.entries.forEach { option ->
+                DropdownMenuItem(
+                    text = { Text(if (option == mode) "✓ ${option.label}" else option.label) },
+                    onClick = {
+                        onSelected(option)
+                        expanded = false
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+internal fun ProductCodeSearchDialog(
+    paints: List<PaintEntity>,
+    state: ProductCodeSearchUiState,
+    onSearch: () -> Unit,
+    onApply: (Map<Long, String>) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var selectedCodes by remember { mutableStateOf<Map<Long, String>>(emptyMap()) }
+    LaunchedEffect(state.results) {
+        selectedCodes = state.results.mapNotNull { result ->
+            result.candidates.firstOrNull()?.code?.let { result.paintId to it }
+        }.toMap()
+    }
+    val confirmed = state.results.count { it.candidates.isNotEmpty() }
+    val unresolved = state.results.count { it.candidates.isEmpty() }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (paints.size == 1) "AI 상품번호 검색 결과" else "미확인 상품번호 찾기") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                Text(
+                    "제조사 공식 자료를 우선 검색하며 결과는 적용 전까지 저장되지 않습니다. 한 번에 최대 5개를 확인합니다.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (state.loading) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                        Text("인터넷에서 공식 상품번호를 확인하는 중…")
+                    }
+                }
+                state.activeModelLabel?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary) }
+                if (state.results.isNotEmpty()) {
+                    Text("확인됨 $confirmed · 확인 필요 $unresolved", style = MaterialTheme.typography.titleSmall)
+                    state.results.forEach { result ->
+                        val paint = paints.firstOrNull { it.id == result.paintId } ?: return@forEach
+                        ProductCodeResultRow(
+                            paint = paint,
+                            result = result,
+                            selectedCode = selectedCodes[result.paintId],
+                            onSelected = { code -> selectedCodes = selectedCodes + (result.paintId to code) },
+                        )
+                    }
+                }
+                state.notice?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onApply(selectedCodes) }, enabled = selectedCodes.isNotEmpty() && !state.loading) {
+                Text(if (paints.size == 1) "선택 번호 적용" else "확인된 항목 적용")
+            }
+        },
+        dismissButton = {
+            Row {
+                TextButton(onClick = onSearch, enabled = !state.loading) { Text("다시 검색") }
+                TextButton(onClick = onDismiss) { Text("취소") }
+            }
+        },
+    )
+}
+
+@Composable
+private fun ProductCodeResultRow(
+    paint: PaintEntity,
+    result: AiProductCodeResult,
+    selectedCode: String?,
+    onSelected: (String) -> Unit,
+) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .4f))) {
+        Column(Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                ColorSwatch(paint.colorValue, 32.dp)
+                Spacer(Modifier.size(8.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(paint.name, style = MaterialTheme.typography.titleSmall)
+                    Text("${paint.brand} · ${paint.series}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            if (result.candidates.isEmpty()) {
+                Text(result.note.ifBlank { "확인할 수 없음" }, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            } else {
+                result.candidates.forEach { candidate ->
+                    FilterChip(
+                        selected = selectedCode == candidate.code,
+                        onClick = { onSelected(candidate.code) },
+                        label = { Text("${candidate.code} · ${confidenceLabel(candidate.confidence)}") },
+                    )
+                    Text(
+                        listOf(candidate.sourceType, candidate.evidence).filter { it.isNotBlank() }.joinToString(" · "),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (result.note.isNotBlank()) Text(result.note, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+}
+
+private fun confidenceLabel(value: String): String = when (value) {
+    "HIGH" -> "신뢰도 높음"
+    "MEDIUM" -> "신뢰도 보통"
+    else -> "사용자 확인 필요"
 }
 
 @Composable

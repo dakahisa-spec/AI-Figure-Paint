@@ -16,6 +16,7 @@ import com.aifigurepaint.app.ai.AiTaskType
 import com.aifigurepaint.app.ai.AiPaintDraft
 import com.aifigurepaint.app.ai.AiPartsComparisonDraft
 import com.aifigurepaint.app.ai.AiProjectDraft
+import com.aifigurepaint.app.ai.AiProductCodeResult
 import com.aifigurepaint.app.ai.AiSettingsStore
 import com.aifigurepaint.app.ai.LocalColorEngine
 import com.aifigurepaint.app.ai.OpenAiService
@@ -98,6 +99,13 @@ data class PartsComparisonUiState(
     val activeModelLabel: String? = null,
 )
 
+data class ProductCodeSearchUiState(
+    val loading: Boolean = false,
+    val results: List<AiProductCodeResult> = emptyList(),
+    val notice: String? = null,
+    val activeModelLabel: String? = null,
+)
+
 class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val db = AppDatabase.get(application)
     private val paintsDao = db.paintDao()
@@ -136,6 +144,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val excelState = _excelState.asStateFlow()
     private val _partsComparisonState = MutableStateFlow(PartsComparisonUiState())
     val partsComparisonState = _partsComparisonState.asStateFlow()
+    private val _productCodeSearchState = MutableStateFlow(ProductCodeSearchUiState())
+    val productCodeSearchState = _productCodeSearchState.asStateFlow()
 
     fun clearMessage() { _message.value = null }
     fun clearAiResult() { _aiState.value = AiUiState() }
@@ -157,6 +167,87 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             _message.value = "도료를 저장했습니다."
             onSaved()
         }.onFailure { _message.value = "저장하지 못했습니다: ${it.message.orEmpty()}" }
+    }
+
+    fun searchProductCodes(paints: List<PaintEntity>) {
+        val targets = paints.distinctBy { it.id }.take(5)
+        if (targets.isEmpty()) return
+        aiJob?.cancel()
+        aiJob = viewModelScope.launch {
+            val selection = aiSettings.selection(AiTaskType.PRODUCT_CODE_SEARCH)
+            _productCodeSearchState.value = ProductCodeSearchUiState(loading = true, activeModelLabel = selection.resultLabel)
+            val apiKey = aiSettings.readApiKey()
+            if (apiKey.isBlank()) {
+                _productCodeSearchState.value = ProductCodeSearchUiState(
+                    notice = "AI 연결을 사용할 수 없습니다. 설정에서 API 키를 등록해주세요.",
+                    activeModelLabel = selection.resultLabel,
+                )
+                return@launch
+            }
+            try {
+                val results = OpenAiService(apiKey, selection).searchProductCodes(targets)
+                _productCodeSearchState.value = ProductCodeSearchUiState(results = results, activeModelLabel = selection.resultLabel)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                _productCodeSearchState.value = ProductCodeSearchUiState(
+                    notice = "상품번호 검색을 완료하지 못했습니다: ${error.message.orEmpty().take(120)}",
+                    activeModelLabel = selection.resultLabel,
+                )
+            }
+        }
+    }
+
+    fun applyProductCode(paint: PaintEntity, code: String, onApplied: () -> Unit = {}) = viewModelScope.launch {
+        val normalized = code.trim()
+        runCatching {
+            require(normalized.isNotBlank()) { "적용할 상품번호가 없습니다." }
+            val duplicate = paintsDao.allOnce().firstOrNull {
+                it.id != paint.id && it.brand.equals(paint.brand, ignoreCase = true) &&
+                    (it.productCode?.trim()?.equals(normalized, ignoreCase = true) == true)
+            }
+            require(duplicate == null) { "${paint.brand} $normalized ${duplicate?.name.orEmpty()}가 이미 등록되어 있습니다." }
+            paintsDao.update(paint.copy(productCode = normalized, updatedAt = System.currentTimeMillis()))
+        }.onSuccess {
+            _message.value = "상품번호 $normalized 을(를) 적용했습니다."
+            onApplied()
+        }.onFailure { _message.value = it.message ?: "상품번호를 적용하지 못했습니다." }
+    }
+
+    fun applyProductCodes(selections: Map<Long, String>, onApplied: () -> Unit = {}) = viewModelScope.launch {
+        runCatching {
+            var applied = 0
+            var conflicts = 0
+            db.withTransaction {
+                val all = paintsDao.allOnce().toMutableList()
+                selections.entries.take(5).forEach { (paintId, rawCode) ->
+                    val paint = all.firstOrNull { it.id == paintId } ?: return@forEach
+                    val code = rawCode.trim()
+                    if (code.isBlank()) return@forEach
+                    val duplicate = all.any {
+                        it.id != paint.id && it.brand.equals(paint.brand, true) &&
+                            (it.productCode?.trim()?.equals(code, true) == true)
+                    }
+                    if (duplicate) {
+                        conflicts++
+                    } else {
+                        val updated = paint.copy(productCode = code, updatedAt = System.currentTimeMillis())
+                        paintsDao.update(updated)
+                        all[all.indexOf(paint)] = updated
+                        applied++
+                    }
+                }
+            }
+            applied to conflicts
+        }.onSuccess { (applied, conflicts) ->
+            _message.value = if (conflicts == 0) "상품번호 ${applied}개를 적용했습니다." else "${applied}개 적용 · 중복 ${conflicts}개 건너뜀"
+            onApplied()
+        }.onFailure { _message.value = "상품번호를 적용하지 못했습니다: ${it.message.orEmpty()}" }
+    }
+
+    fun clearProductCodeSearch() {
+        aiJob?.cancel()
+        _productCodeSearchState.value = ProductCodeSearchUiState()
     }
 
     fun setPaintOwned(paint: PaintEntity, owned: Boolean) = viewModelScope.launch {

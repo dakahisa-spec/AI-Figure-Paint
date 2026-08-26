@@ -218,6 +218,7 @@ fun AiFigurePaintApp(viewModel: AppViewModel) {
                         onEdit = { detail = DetailPage.PaintEditor(it) },
                     ) else PaintListScreen(
                             paints = paints,
+                            viewModel = viewModel,
                             onAdd = { detail = DetailPage.PaintEditor(null) },
                             onScan = { detail = DetailPage.PaintScan },
                             onOpen = { detail = DetailPage.PaintEditor(it) },

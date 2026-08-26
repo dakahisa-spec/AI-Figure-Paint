@@ -24,6 +24,7 @@ enum class AiTaskType {
     RECIPE_ADJUST,
     TEST_PIECE_ADJUST,
     PARTS_COMPARE,
+    PRODUCT_CODE_SEARCH,
 }
 
 data class AiModelSelection(
@@ -55,7 +56,7 @@ object AiModelRouter {
         val modelId = selectedMode.modelId ?: when {
             highestQuality -> SOL_MODEL
             taskType == AiTaskType.TEST_PIECE_ADJUST || taskType == AiTaskType.PARTS_COMPARE -> SOL_MODEL
-            taskType == AiTaskType.PAINT_SCAN || taskType == AiTaskType.SIMPLE_CHAT -> LUNA_MODEL
+            taskType == AiTaskType.PAINT_SCAN || taskType == AiTaskType.SIMPLE_CHAT || taskType == AiTaskType.PRODUCT_CODE_SEARCH -> LUNA_MODEL
             else -> TERRA_MODEL
         }
         return AiModelSelection(selectedMode, taskType, modelId)

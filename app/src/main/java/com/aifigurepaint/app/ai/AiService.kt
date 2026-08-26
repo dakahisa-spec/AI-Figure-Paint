@@ -77,12 +77,26 @@ data class AiPartsComparisonDraft(
     val findings: List<String>,
 )
 
+data class AiProductCodeCandidate(
+    val code: String,
+    val confidence: String,
+    val sourceType: String,
+    val evidence: String,
+)
+
+data class AiProductCodeResult(
+    val paintId: Long,
+    val candidates: List<AiProductCodeCandidate>,
+    val note: String,
+)
+
 interface AiService {
     suspend fun suggestMix(request: AiMixRequest): AiMixSuggestion
     suspend fun advise(question: String, context: String): String
     suspend fun analyzePaintPhotos(imageDataUrls: List<String>): AiPaintDraft
     suspend fun analyzeProjectPhoto(imageDataUrl: String, captureDate: String): AiProjectDraft
     suspend fun compareParts(baselineImageDataUrl: String, currentImageDataUrl: String): AiPartsComparisonDraft
+    suspend fun searchProductCodes(paints: List<PaintEntity>): List<AiProductCodeResult>
 }
 
 class OpenAiService(
@@ -464,6 +478,117 @@ class OpenAiService(
             summary = json.optString("summary").trim(),
             findings = findings,
         )
+    }
+
+    override suspend fun searchProductCodes(paints: List<PaintEntity>): List<AiProductCodeResult> {
+        require(paints.size in 1..5) { "상품번호 검색은 한 번에 1~5개만 가능합니다." }
+        val targets = paints.joinToString("\n") { paint ->
+            "id=${paint.id}; brand=${paint.brand}; series=${paint.series}; current_code=${paint.productCode.orEmpty()}; name=${paint.name}; korean_name=${paint.koreanName}; color=${hex(paint.colorValue)}; memo=${paint.memo.take(160)}"
+        }
+        val candidateProperties = JSONObject()
+            .put("code", JSONObject().put("type", "string"))
+            .put("confidence", JSONObject().put("type", "string").put("enum", JSONArray(listOf("HIGH", "MEDIUM", "LOW"))))
+            .put("source_type", JSONObject().put("type", "string"))
+            .put("evidence", JSONObject().put("type", "string"))
+        val resultProperties = JSONObject()
+            .put("paint_id", JSONObject().put("type", "integer"))
+            .put(
+                "candidates",
+                JSONObject()
+                    .put("type", "array")
+                    .put("maxItems", 3)
+                    .put(
+                        "items",
+                        JSONObject()
+                            .put("type", "object")
+                            .put("additionalProperties", false)
+                            .put("required", JSONArray(listOf("code", "confidence", "source_type", "evidence")))
+                            .put("properties", candidateProperties),
+                    ),
+            )
+            .put("note", JSONObject().put("type", "string"))
+        val body = JSONObject()
+            .put("model", model)
+            .put("store", false)
+            .put("reasoning", JSONObject().put("effort", "low"))
+            .put("tools", JSONArray().put(JSONObject().put("type", "web_search")))
+            .put("tool_choice", "required")
+            .put(
+                "instructions",
+                """
+                피규어·모형용 도료의 공식 제품 코드/상품번호를 인터넷에서 조사합니다.
+                제조사 공식 홈페이지와 공식 카탈로그/PDF를 최우선으로 하고, 다음으로 공식 유통사·공식 판매처·신뢰할 수 있는 전문 도료 판매점을 사용하세요.
+                가능하면 서로 독립된 자료 2개를 교차 확인하세요. 블로그나 커뮤니티 글 하나만으로 확정하지 마세요.
+                입력된 도료마다 paint_id를 그대로 반환하고 후보는 최대 3개만 제시하세요. 공식 번호를 확인하지 못하면 candidates를 빈 배열로 두고 note에 '확인할 수 없음'을 적으세요.
+                번호를 추측하거나 만들어내지 마세요. 후보가 충돌하면 모두 낮거나 중간 신뢰도로 반환하고 사용자가 확인해야 한다고 적으세요.
+                source_type에는 '제조사 공식', '공식 카탈로그', '공식 유통사', '전문 판매점' 중 실제 확인한 유형을 짧게 적고 evidence에는 일치한 제품명·시리즈 근거만 간단히 적으세요.
+                데이터베이스를 변경하지 말고 검토용 검색 결과만 반환하세요.
+                """.trimIndent(),
+            )
+            .put("input", "다음 도료의 제품 코드를 검색하세요.\n$targets")
+            .put(
+                "text",
+                JSONObject().put(
+                    "format",
+                    JSONObject()
+                        .put("type", "json_schema")
+                        .put("name", "paint_product_code_results")
+                        .put("strict", true)
+                        .put(
+                            "schema",
+                            JSONObject()
+                                .put("type", "object")
+                                .put("additionalProperties", false)
+                                .put("required", JSONArray(listOf("results")))
+                                .put(
+                                    "properties",
+                                    JSONObject().put(
+                                        "results",
+                                        JSONObject()
+                                            .put("type", "array")
+                                            .put("minItems", paints.size)
+                                            .put("maxItems", paints.size)
+                                            .put(
+                                                "items",
+                                                JSONObject()
+                                                    .put("type", "object")
+                                                    .put("additionalProperties", false)
+                                                    .put("required", JSONArray(listOf("paint_id", "candidates", "note")))
+                                                    .put("properties", resultProperties),
+                                            ),
+                                    ),
+                                ),
+                        ),
+                ),
+            )
+        val json = JSONObject(extractOutputText(post(body)))
+        val allowedIds = paints.map { it.id }.toSet()
+        val results = buildList {
+            val rows = json.optJSONArray("results") ?: JSONArray()
+            for (index in 0 until rows.length()) {
+                val row = rows.optJSONObject(index) ?: continue
+                val paintId = row.optLong("paint_id")
+                if (paintId !in allowedIds) continue
+                val candidates = buildList {
+                    val items = row.optJSONArray("candidates") ?: JSONArray()
+                    for (candidateIndex in 0 until items.length()) {
+                        val item = items.optJSONObject(candidateIndex) ?: continue
+                        val code = item.optString("code").trim()
+                        if (code.isBlank()) continue
+                        add(
+                            AiProductCodeCandidate(
+                                code = code,
+                                confidence = item.optString("confidence", "LOW"),
+                                sourceType = item.optString("source_type").trim(),
+                                evidence = item.optString("evidence").trim(),
+                            ),
+                        )
+                    }
+                }
+                add(AiProductCodeResult(paintId, candidates.distinctBy { it.code.uppercase() }.take(3), row.optString("note").trim()))
+            }
+        }
+        return paints.map { paint -> results.firstOrNull { it.paintId == paint.id } ?: AiProductCodeResult(paint.id, emptyList(), "확인할 수 없음") }
     }
 
     private suspend fun post(body: JSONObject): JSONObject = withContext(Dispatchers.IO) {

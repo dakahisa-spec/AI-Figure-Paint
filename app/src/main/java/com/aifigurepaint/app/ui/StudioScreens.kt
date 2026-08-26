@@ -143,13 +143,19 @@ internal fun WidePaintStudio(
     onScan: () -> Unit,
     onEdit: (Long) -> Unit,
 ) {
+    val context = LocalContext.current
+    val productCodeState by viewModel.productCodeSearchState.collectAsState()
     var selectedId by remember { mutableStateOf<Long?>(null) }
     var query by remember { mutableStateOf("") }
     var ownedOnly by remember { mutableStateOf(false) }
-    LaunchedEffect(paints) { if (selectedId == null || paints.none { it.id == selectedId }) selectedId = paints.firstOrNull()?.id }
-    val filtered = paints.filter {
+    var sortMode by remember { mutableStateOf(PaintSortPreferences.read(context)) }
+    var showBatchSearch by remember { mutableStateOf(false) }
+    val matches = paints.filter {
         (!ownedOnly || it.owned) && (query.isBlank() || listOf(it.name, it.koreanName, it.brand, it.productCode.orEmpty()).any { value -> value.contains(query, true) })
     }
+    val filtered = sortPaints(matches, sortMode)
+    val missingCodes = paints.filter { it.productCode.isNullOrBlank() }
+    LaunchedEffect(filtered) { if (selectedId == null || filtered.none { it.id == selectedId }) selectedId = filtered.firstOrNull()?.id }
     val selected = paints.firstOrNull { it.id == selectedId }
     Row(Modifier.fillMaxSize().padding(8.dp), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
         val panelShape = RoundedCornerShape(10.dp)
@@ -169,9 +175,23 @@ internal fun WidePaintStudio(
                     onSecondary = onScan,
                 )
                 OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth().padding(top = 10.dp), placeholder = { Text("도료명 · 코드 · 브랜드 검색") }, singleLine = true)
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Checkbox(ownedOnly, { ownedOnly = it })
-                    Text("보유 도료만", style = MaterialTheme.typography.bodySmall)
+                    Text("보유만", style = MaterialTheme.typography.bodySmall)
+                    PaintSortMenu(sortMode) { selected ->
+                        sortMode = selected
+                        PaintSortPreferences.save(context, selected)
+                    }
+                }
+                if (missingCodes.isNotEmpty()) {
+                    TextButton(
+                        onClick = {
+                            viewModel.clearProductCodeSearch()
+                            showBatchSearch = true
+                            viewModel.searchProductCodes(missingCodes.take(5))
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("미확인 상품번호 ${missingCodes.size}개 · 5개 찾기") }
                 }
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     items(filtered, key = { it.id }) { paint ->
@@ -185,7 +205,7 @@ internal fun WidePaintStudio(
                                 Spacer(Modifier.width(9.dp))
                                 Column(Modifier.weight(1f)) {
                                     Text(paint.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    Text("${paint.brand} · ${paint.productCode.orEmpty()}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text("${paint.brand} · ${paint.productCode?.takeIf { it.isNotBlank() } ?: "상품번호 미확인"}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                                 Column(horizontalAlignment = Alignment.End) {
                                     Text(if (paint.favorite) "★" else "☆", color = MaterialTheme.colorScheme.primary)
@@ -210,11 +230,30 @@ internal fun WidePaintStudio(
             }
         }
     }
+    if (showBatchSearch) {
+        ProductCodeSearchDialog(
+            paints = missingCodes.take(5),
+            state = productCodeState,
+            onSearch = { viewModel.searchProductCodes(missingCodes.take(5)) },
+            onApply = { selected ->
+                viewModel.applyProductCodes(selected) {
+                    viewModel.clearProductCodeSearch()
+                    showBatchSearch = false
+                }
+            },
+            onDismiss = {
+                viewModel.clearProductCodeSearch()
+                showBatchSearch = false
+            },
+        )
+    }
 }
 
 @Composable
 private fun PaintMasterDetail(paint: PaintEntity, viewModel: AppViewModel, onEdit: (Long) -> Unit) {
     val usedRecipes by viewModel.paintRecipes(paint.id).collectAsState(initial = emptyList())
+    val productCodeState by viewModel.productCodeSearchState.collectAsState()
+    var showProductCodeSearch by remember(paint.id) { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(verticalAlignment = Alignment.Top) {
             ColorSwatch(paint.colorValue, 126.dp)
@@ -225,7 +264,7 @@ private fun PaintMasterDetail(paint: PaintEntity, viewModel: AppViewModel, onEdi
                     TextButton(onClick = { viewModel.togglePaintFavorite(paint) }) { Text(if (paint.favorite) "★" else "☆", fontSize = 24.sp) }
                 }
                 if (paint.koreanName.isNotBlank()) Text(paint.koreanName, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("${paint.brand} · ${paint.series} · ${paint.productCode.orEmpty()}", style = MaterialTheme.typography.bodyMedium)
+                Text("${paint.brand} · ${paint.series} · ${paint.productCode?.takeIf { it.isNotBlank() } ?: "상품번호 미확인"}", style = MaterialTheme.typography.bodyMedium)
                 Text("최근 사용 ${paint.lastUsedAt?.let(::formatDateTime) ?: "기록 없음"}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
@@ -250,7 +289,34 @@ private fun PaintMasterDetail(paint: PaintEntity, viewModel: AppViewModel, onEdi
                 Text(formatDateTime(card.updatedAt), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
+        OutlinedButton(
+            onClick = {
+                viewModel.clearProductCodeSearch()
+                showProductCodeSearch = true
+                viewModel.searchProductCodes(listOf(paint))
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text(if (paint.productCode.isNullOrBlank()) "AI로 상품번호 찾기" else "AI 검색 결과와 현재 번호 비교") }
         OutlinedButton(onClick = { onEdit(paint.id) }, modifier = Modifier.fillMaxWidth()) { Text("도료 정보 수정") }
+    }
+    if (showProductCodeSearch) {
+        ProductCodeSearchDialog(
+            paints = listOf(paint),
+            state = productCodeState,
+            onSearch = { viewModel.searchProductCodes(listOf(paint)) },
+            onApply = { selected ->
+                selected[paint.id]?.let { code ->
+                    viewModel.applyProductCode(paint, code) {
+                        viewModel.clearProductCodeSearch()
+                        showProductCodeSearch = false
+                    }
+                }
+            },
+            onDismiss = {
+                viewModel.clearProductCodeSearch()
+                showProductCodeSearch = false
+            },
+        )
     }
 }
 
