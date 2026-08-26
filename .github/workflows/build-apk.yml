@@ -1,5 +1,4 @@
 name: Build AI Figure Paint APK
-# v0.7.1 builds the multi-photo original color matching update.
 
 on:
   workflow_dispatch:
