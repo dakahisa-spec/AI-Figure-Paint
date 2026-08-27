@@ -1080,8 +1080,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun prepareOriginalColorPhoto(uri: Uri): String {
         val resolver = getApplication<Application>().contentResolver
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+        val boundsStream = resolver.openInputStream(uri)
             ?: error("사진 파일을 읽을 수 없습니다.")
+        // inJustDecodeBounds는 정상 처리되어도 Bitmap 대신 null을 반환한다.
+        boundsStream.use { BitmapFactory.decodeStream(it, null, bounds) }
         require(bounds.outWidth > 0 && bounds.outHeight > 0) { "사진 크기를 확인할 수 없습니다." }
 
         var sampleSize = 1
