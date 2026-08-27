@@ -158,6 +158,13 @@ interface AiService {
         paints: List<PaintEntity>,
         ownedOnly: Boolean,
     ): AiOriginalColorPlanDraft
+    suspend fun analyzePhotoColors(
+        imageDataUrls: List<String>,
+        projectType: String,
+        subject: AiSubjectCandidate,
+        paints: List<PaintEntity>,
+        ownedOnly: Boolean,
+    ): AiOriginalColorPlanDraft
 }
 
 class OpenAiService(
@@ -712,6 +719,47 @@ class OpenAiService(
         reference: AiOfficialReference,
         paints: List<PaintEntity>,
         ownedOnly: Boolean,
+    ): AiOriginalColorPlanDraft = analyzeColorPlan(
+        imageDataUrls = imageDataUrls,
+        projectType = projectType,
+        subject = subject,
+        reference = reference,
+        paints = paints,
+        ownedOnly = ownedOnly,
+        photoOnly = false,
+    )
+
+    override suspend fun analyzePhotoColors(
+        imageDataUrls: List<String>,
+        projectType: String,
+        subject: AiSubjectCandidate,
+        paints: List<PaintEntity>,
+        ownedOnly: Boolean,
+    ): AiOriginalColorPlanDraft = analyzeColorPlan(
+        imageDataUrls = imageDataUrls,
+        projectType = projectType,
+        subject = subject,
+        reference = AiOfficialReference(
+            title = "사용자 사진 기준 분석",
+            sourceName = "등록 사진",
+            referenceType = "USER_PHOTO_ONLY",
+            url = "",
+            official = false,
+            note = "공식 원작 자료가 아닌 사용자 사진 기준 분석",
+        ),
+        paints = paints,
+        ownedOnly = ownedOnly,
+        photoOnly = true,
+    )
+
+    private suspend fun analyzeColorPlan(
+        imageDataUrls: List<String>,
+        projectType: String,
+        subject: AiSubjectCandidate,
+        reference: AiOfficialReference,
+        paints: List<PaintEntity>,
+        ownedOnly: Boolean,
+        photoOnly: Boolean,
     ): AiOriginalColorPlanDraft {
         val available = paints.filter { !ownedOnly || it.owned }
         require(available.isNotEmpty()) { "조건에 맞는 도료가 없습니다." }
@@ -761,7 +809,21 @@ class OpenAiService(
                     .put("single_color_usable", JSONObject().put("type", "boolean"))
                     .put("mix_options", JSONObject().put("type", "array").put("maxItems", 3).put("items", mixOption)),
             )
-        require(imageDataUrls.size in 1..5) { "원작 컬러 매칭 사진은 1~5장이 필요합니다." }
+        require(imageDataUrls.size in 1..5) { "컬러 분석 사진은 1~5장이 필요합니다." }
+        val analysisInstruction = if (photoOnly) {
+            """
+            공식 참고자료나 웹 검색을 사용하지 마세요. 첨부된 ${imageDataUrls.size}장의 사용자 사진만 기준으로 하나의 통합 컬러 플랜을 만드세요. 모든 사진은 같은 대상을 여러 각도에서 촬영한 것으로 간주하되 서로 다른 대상으로 보이면 characteristics에 사용자 확인 필요를 표시하세요.
+            사진 사이의 색온도, 실내·야외 조명, 그림자, 하이라이트, 카메라 자동 보정, 배경 반사, 유광·무광 반사를 비교해 공통으로 확인되는 실제 도장색을 추정하세요. 한 장의 가장 밝거나 어두운 색, 전체 평균색을 그대로 기준으로 삼지 마세요. 조명 영향이 크거나 확신하기 어려운 색은 characteristics에 '조명 영향 가능성' 또는 '사진상 추정색'을 표시하세요.
+            실제 사진에서 확인되는 주요 도색 부위만 분리하세요. Mechanic이면 외장·프레임·관절·무장·버니어·센서·투명 부품, Figure이면 피부·머리 메인/음영·눈·의상 메인/서브·장식·무기·소품을 우선하되 보이지 않는 부위는 만들지 마세요.
+            이 결과는 공식 원작 색상이 아니라 사용자 사진 기준 예상색입니다. disclaimer에는 조명, 카메라 보정, 배경색, 도료 안료, 바탕색, 희석비와 도막 두께에 따른 차이를 반드시 안내하세요.
+            """.trimIndent()
+        } else {
+            """
+            선택된 URL의 자료를 웹 검색으로 다시 확인하세요. 첨부된 ${imageDataUrls.size}장의 사용자 사진은 동일 대상의 여러 각도이며 버전·의상·장비·실제 존재 부위를 확인하는 보조로만 종합 사용하세요. 사용자 사진의 조명색을 공식 설정색으로 사용하지 말고 서로 다른 버전의 색을 섞지 마세요.
+            전체 평균색이 아니라 실제로 확인되는 주요 도색 부위를 분리하세요. Mechanic이면 외장·프레임·무장·버니어·센서, Figure이면 피부·머리·눈·의상·소품 범주를 우선하되 보이지 않는 부위는 만들지 마세요.
+            색상은 원작 참고 기반 예상값이며 화면 캡처·조명·렌더링·색보정 오차를 고려하세요.
+            """.trimIndent()
+        }
         val content = JSONArray()
             .put(
                 JSONObject().put("type", "input_text").put(
@@ -773,9 +835,8 @@ class OpenAiService(
                     URL: ${reference.url}
                     공식 확인: ${reference.official}
 
-                    선택된 URL의 자료를 웹 검색으로 다시 확인하세요. 첨부된 ${imageDataUrls.size}장의 사용자 사진은 동일 대상의 여러 각도이며 버전·의상·장비·실제 존재 부위를 확인하는 보조로만 종합 사용하세요. 사용자 사진의 조명색을 공식 설정색으로 사용하지 말고 서로 다른 버전의 색을 섞지 마세요.
-                    전체 평균색이 아니라 실제로 확인되는 주요 도색 부위를 분리하세요. Mechanic이면 외장·프레임·무장·버니어·센서, Figure이면 피부·머리·눈·의상·소품 범주를 우선하되 보이지 않는 부위는 만들지 마세요.
-                    색상은 원작 참고 기반 예상값이며 화면 캡처·조명·렌더링·색보정 오차를 고려하세요.
+                    $analysisInstruction
+
                     아래 도료 목록에서만 nearest와 mix components를 고르세요. 단색이 충분히 가까울 때만 single_color_usable=true로 하세요. 조색안은 최대 3개, 각 안료 비율 합계는 100이며 최소 도료 수를 우선하세요. DB는 변경하지 말고 제안만 반환하세요.
 
                     사용 가능 도료(보유만=$ownedOnly):
@@ -784,15 +845,19 @@ class OpenAiService(
                 ),
             )
         imageDataUrls.forEachIndexed { index, dataUrl ->
-            content.put(JSONObject().put("type", "input_text").put("text", "사용자 보조 사진 ${index + 1}/${imageDataUrls.size}"))
+            content.put(JSONObject().put("type", "input_text").put("text", "${if (photoOnly) "분석" else "사용자 보조"} 사진 ${index + 1}/${imageDataUrls.size}"))
             content.put(JSONObject().put("type", "input_image").put("image_url", dataUrl).put("detail", "high"))
         }
         val body = JSONObject()
             .put("model", model)
             .put("store", false)
             .put("reasoning", JSONObject().put("effort", "high"))
-            .put("tools", JSONArray().put(JSONObject().put("type", "web_search")))
-            .put("tool_choice", "required")
+            .apply {
+                if (!photoOnly) {
+                    put("tools", JSONArray().put(JSONObject().put("type", "web_search")))
+                    put("tool_choice", "required")
+                }
+            }
             .put("input", JSONArray().put(JSONObject().put("role", "user").put("content", content)))
             .put(
                 "text",
@@ -872,7 +937,13 @@ class OpenAiService(
             versionName = subject.versionName,
             reference = reference,
             parts = parts,
-            disclaimer = json.optString("disclaimer").ifBlank { "실제 결과는 도료의 안료 특성, 바탕색, 희석비 및 도막 두께에 따라 달라질 수 있습니다." },
+            disclaimer = json.optString("disclaimer").ifBlank {
+                if (photoOnly) {
+                    "공식 원작 색상이 아닌 사용자 사진 기준 분석입니다. 조명, 카메라 보정, 배경색, 도료의 안료 특성, 바탕색, 희석비 및 도막 두께에 따라 결과가 달라질 수 있습니다."
+                } else {
+                    "실제 결과는 도료의 안료 특성, 바탕색, 희석비 및 도막 두께에 따라 달라질 수 있습니다."
+                }
+            },
         )
     }
 
@@ -1089,6 +1160,8 @@ class AiSettingsStore(context: Context) {
         if (apiKey.isNotBlank()) prefs.edit().putString(KEY_VALUE, encrypt(apiKey.trim())).apply()
         prefs.edit().putString(KEY_MODEL_MODE, mode.name).apply()
     }
+
+    fun saveMode(mode: AiModelMode) = prefs.edit().putString(KEY_MODEL_MODE, mode.name).apply()
 
     fun clear() = prefs.edit().remove(KEY_VALUE).apply()
     fun readApiKey(): String = prefs.getString(KEY_VALUE, null)?.let(::decrypt).orEmpty()

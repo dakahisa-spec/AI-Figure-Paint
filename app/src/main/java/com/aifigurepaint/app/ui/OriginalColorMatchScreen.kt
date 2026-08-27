@@ -21,6 +21,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
@@ -29,6 +30,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -52,6 +54,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
 import com.aifigurepaint.app.AppViewModel
 import com.aifigurepaint.app.ai.AiMixSuggestion
+import com.aifigurepaint.app.ai.AiModelMode
 import com.aifigurepaint.app.ai.AiOfficialReference
 import com.aifigurepaint.app.ai.AiOriginalColorPart
 import com.aifigurepaint.app.ai.AiOriginalMixOption
@@ -65,6 +68,8 @@ import java.io.File
 import kotlin.math.pow
 import kotlin.math.sqrt
 
+private const val USER_PHOTO_ONLY = "USER_PHOTO_ONLY"
+
 @Composable
 internal fun OriginalColorMatchDialog(
     project: ProjectEntity,
@@ -75,6 +80,7 @@ internal fun OriginalColorMatchDialog(
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
     val state by viewModel.originalColorMatchState.collectAsState()
+    val aiModelMode by viewModel.aiModelMode.collectAsState()
     val projectPhotos by viewModel.photos(PhotoOwner.PROJECT, project.id).collectAsState(initial = emptyList())
     val savedPlans by viewModel.originalColorPlans(project.id).collectAsState(initial = emptyList())
     val imageUris = remember(project.id) { mutableStateListOf<String>() }
@@ -90,6 +96,7 @@ internal fun OriginalColorMatchDialog(
     var manualVersion by remember { mutableStateOf("") }
     var ownedOnly by remember { mutableStateOf(true) }
     var totalMl by remember { mutableStateOf(10.0) }
+    var showModelChooser by remember { mutableStateOf(false) }
 
     LaunchedEffect(projectPhotos, project.photoUri) {
         if (!initialPhotoLoaded) {
@@ -257,6 +264,7 @@ internal fun OriginalColorMatchDialog(
                         when (state.stage) {
                             "REFERENCE" -> "공식 참고자료 검색 중"
                             "PLAN" -> "부위별 원작 색상과 보유 도료 분석 중"
+                            "PHOTO_PLAN" -> "사용자 사진 기준 색상과 보유 도료 분석 중"
                             else -> "캐릭터/기체 후보 분석 중"
                         },
                     )
@@ -298,42 +306,58 @@ internal fun OriginalColorMatchDialog(
                         selectedReference = reference
                     }
                 }
+            }
+            if (selectedCandidate != null) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(ownedOnly, { ownedOnly = it })
                     Text(if (ownedOnly) "보유 도료만 사용" else "미보유 도료 포함")
                 }
-                Button(
-                    onClick = {
-                        val candidate = selectedCandidate ?: return@Button
-                        val reference = selectedReference ?: return@Button
-                        if (imageUris.isEmpty()) return@Button
-                        viewModel.analyzeOriginalColors(project, imageUris.toList(), candidate, reference, ownedOnly)
-                    },
-                    enabled = selectedCandidate != null && selectedReference != null && !state.loading,
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("이 자료를 기준으로 분석") }
-            } else if (selectedCandidate != null && !state.loading) {
+                if (state.references.isNotEmpty()) {
+                    Button(
+                        onClick = {
+                            val candidate = selectedCandidate ?: return@Button
+                            val reference = selectedReference ?: return@Button
+                            if (imageUris.isEmpty()) return@Button
+                            viewModel.analyzeOriginalColors(project, imageUris.toList(), candidate, reference, ownedOnly)
+                        },
+                        enabled = selectedReference != null && !state.loading,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("이 자료를 기준으로 분석") }
+                }
                 OutlinedButton(
                     onClick = {
                         val candidate = selectedCandidate ?: return@OutlinedButton
                         if (imageUris.isEmpty()) return@OutlinedButton
-                        val fallback = AiOfficialReference("사용자 사진", "프로젝트 사진", "사용자 사진 기준", "", false, "공식 원작 자료가 아닌 사용자 사진 기준 분석")
-                        selectedReference = fallback
-                        viewModel.analyzeOriginalColors(project, imageUris.toList(), candidate, fallback, ownedOnly)
+                        selectedReference = null
+                        viewModel.analyzePhotoColors(project, imageUris.toList(), candidate, ownedOnly)
                     },
+                    enabled = imageUris.isNotEmpty() && !state.loading,
                     modifier = Modifier.fillMaxWidth(),
-                ) { Text("공식 자료 없이 사진 자체를 기준으로 분석") }
+                ) { Text("참고자료 없이 사진만 분석") }
+                Text(
+                    "공식 원작 색상이 아닌 촬영 사진의 색상을 기준으로 분석합니다. 조명·카메라 보정·배경색에 따라 실제 색상과 차이가 날 수 있습니다.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
 
             state.plan?.let { plan ->
+                val photoOnly = plan.reference.referenceType == USER_PHOTO_ONLY
                 HorizontalDivider(Modifier.padding(vertical = 4.dp))
                 Text("프로젝트 컬러 플랜", style = MaterialTheme.typography.titleLarge)
                 Text("${plan.subjectName} · ${plan.workTitle} · ${plan.versionName}", fontWeight = FontWeight.SemiBold)
                 Text(
-                    "${if (plan.reference.official) "공식" else "공식 확인 안 됨"} · ${plan.reference.referenceType} · ${plan.parts.size}색 분석",
+                    if (photoOnly) "사용자 사진 기준 분석 · ${plan.parts.size}색" else "${if (plan.reference.official) "공식" else "공식 확인 안 됨"} · ${plan.reference.referenceType} · ${plan.parts.size}색 분석",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.primary,
                 )
+                if (photoOnly) {
+                    Text(
+                        "공식 원작 색상이 아닌 촬영 사진 기준 결과입니다. 조명, 카메라 보정, 배경색에 따라 실제 색상과 차이가 날 수 있습니다.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                     listOf(3.0, 5.0, 10.0, 15.0, 20.0).forEach { amount ->
                         OutlinedButton(onClick = { totalMl = amount }, modifier = Modifier.weight(1f)) {
@@ -344,7 +368,7 @@ internal fun OriginalColorMatchDialog(
                 plan.parts.forEach { part ->
                     OriginalColorPartCard(part, totalMl, recipes, project.id, plan, viewModel)
                 }
-                Text("원작 참고 기반 예상 색상", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                Text(if (photoOnly) "사진 기준 예상 조색" else "원작 참고 기반 예상 색상", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
                 Text(plan.disclaimer, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Button(
                     onClick = { viewModel.saveOriginalColorPlan(project.id, plan) },
@@ -367,6 +391,9 @@ internal fun OriginalColorMatchDialog(
                         Text("AI 원작 컬러 매칭", style = MaterialTheme.typography.headlineSmall)
                         Text(project.name, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
+                    TextButton(onClick = { showModelChooser = true }, enabled = !state.loading) {
+                        Text("AI 모델 · ${modelShortLabel(aiModelMode)}")
+                    }
                     TextButton(onClick = onDismiss) { Text("닫기") }
                 }
                 BoxWithConstraints(Modifier.fillMaxSize().padding(top = 8.dp)) {
@@ -386,6 +413,46 @@ internal fun OriginalColorMatchDialog(
             }
         }
     }
+    if (showModelChooser) {
+        AlertDialog(
+            onDismissRequest = { showModelChooser = false },
+            title = { Text("AI 모델 변경") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    AiModelMode.entries.forEach { option ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().clickable {
+                                viewModel.saveAiModelMode(option)
+                                showModelChooser = false
+                            }.padding(vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RadioButton(
+                                selected = aiModelMode == option,
+                                onClick = {
+                                    viewModel.saveAiModelMode(option)
+                                    showModelChooser = false
+                                },
+                            )
+                            Column(Modifier.padding(start = 8.dp)) {
+                                Text(modelShortLabel(option), style = MaterialTheme.typography.titleMedium)
+                                Text(option.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = { showModelChooser = false }) { Text("취소") } },
+        )
+    }
+}
+
+private fun modelShortLabel(mode: AiModelMode): String = when (mode) {
+    AiModelMode.AUTO -> "자동"
+    AiModelMode.LUNA -> "Luna"
+    AiModelMode.TERRA -> "Terra"
+    AiModelMode.SOL -> "Sol"
 }
 
 @Composable
@@ -498,9 +565,9 @@ private fun partSuggestion(
     name = "${plan.subjectName} ${part.partName}",
     targetHex = part.targetHex,
     components = option.components,
-    explanation = "${option.explanation}\n원작 참고 기반 예상 색상",
+    explanation = "${option.explanation}\n${if (plan.reference.referenceType == USER_PHOTO_ONLY) "사용자 사진 기준 예상 조색" else "원작 참고 기반 예상 색상"}",
     source = "${plan.reference.sourceName} · ${plan.reference.referenceType}",
-    originalPrompt = "AI 원작 컬러 매칭: ${plan.subjectName} / ${plan.versionName} / ${part.partName}",
+    originalPrompt = "${if (plan.reference.referenceType == USER_PHOTO_ONLY) "AI 사진 기준 도료 분석" else "AI 원작 컬러 매칭"}: ${plan.subjectName} / ${plan.versionName} / ${part.partName}",
 )
 
 @Composable
@@ -513,7 +580,10 @@ private fun StoredOriginalPlanCard(plan: OriginalColorPlanEntity) {
                 Text(plan.identifiedName, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                 Text("${parts.size}색", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
             }
-            Text("${plan.referenceType} · ${if (plan.official) "공식" else "공식 확인 안 됨"}", style = MaterialTheme.typography.labelSmall)
+            Text(
+                if (plan.referenceType == USER_PHOTO_ONLY) "사용자 사진 기준 분석" else "${plan.referenceType} · ${if (plan.official) "공식" else "공식 확인 안 됨"}",
+                style = MaterialTheme.typography.labelSmall,
+            )
             if (expanded) parts.forEach { Text("• ${it.first} ${it.second}", style = MaterialTheme.typography.bodySmall) }
         }
     }

@@ -454,6 +454,58 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun analyzePhotoColors(
+        project: ProjectEntity,
+        imageUris: List<String>,
+        candidate: AiSubjectCandidate,
+        ownedOnly: Boolean,
+    ) {
+        aiJob?.cancel()
+        aiJob = viewModelScope.launch {
+            val selection = aiSettings.selection(AiTaskType.ORIGINAL_COLOR_MATCH)
+            _originalColorMatchState.value = _originalColorMatchState.value.copy(
+                loading = true,
+                stage = "PHOTO_PLAN",
+                notice = null,
+                activeModelLabel = selection.resultLabel,
+            )
+            val apiKey = aiSettings.readApiKey()
+            if (apiKey.isBlank()) {
+                _originalColorMatchState.value = _originalColorMatchState.value.copy(
+                    loading = false,
+                    notice = "AI 연결을 사용할 수 없습니다. 기존 설정에서 API 키를 확인해주세요.",
+                )
+                return@launch
+            }
+            try {
+                val (photos, failedCount) = prepareOriginalColorPhotos(imageUris)
+                val plan = OpenAiService(apiKey, selection).analyzePhotoColors(
+                    imageDataUrls = photos,
+                    projectType = project.projectType,
+                    subject = candidate,
+                    paints = paints.value,
+                    ownedOnly = ownedOnly,
+                )
+                _originalColorMatchState.value = _originalColorMatchState.value.copy(
+                    loading = false,
+                    stage = "PHOTO_PLAN",
+                    plan = plan,
+                    notice = if (failedCount > 0) {
+                        "사진 ${imageUris.size}장 중 ${failedCount}장을 불러오지 못했지만 나머지 사진으로 분석했습니다."
+                    } else null,
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                _originalColorMatchState.value = _originalColorMatchState.value.copy(
+                    loading = false,
+                    stage = "REFERENCE",
+                    notice = "사진 기준 도료 분석을 완료하지 못했습니다: ${error.message.orEmpty().take(120)}",
+                )
+            }
+        }
+    }
+
     fun saveOriginalColorPlan(projectId: Long, plan: AiOriginalColorPlanDraft, onSaved: () -> Unit = {}) = viewModelScope.launch {
         runCatching {
             originalColorPlansDao.insert(
@@ -471,7 +523,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 ),
             )
         }.onSuccess {
-            _message.value = "원작 컬러 플랜을 저장했습니다."
+            _message.value = if (plan.reference.referenceType == "USER_PHOTO_ONLY") {
+                "사진 기준 컬러 플랜을 저장했습니다."
+            } else {
+                "원작 컬러 플랜을 저장했습니다."
+            }
             onSaved()
         }.onFailure { _message.value = "컬러 플랜을 저장하지 못했습니다: ${it.message.orEmpty()}" }
     }
@@ -770,6 +826,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _aiConfigured.value = aiSettings.hasApiKey()
         _aiModelMode.value = aiSettings.mode()
         _message.value = "AI 연결 설정을 안전하게 저장했습니다."
+    }
+
+    fun saveAiModelMode(mode: AiModelMode) {
+        aiSettings.saveMode(mode)
+        _aiModelMode.value = aiSettings.mode()
+        _originalColorMatchState.value = _originalColorMatchState.value.copy(
+            activeModelLabel = aiSettings.selection(AiTaskType.ORIGINAL_COLOR_MATCH).resultLabel,
+        )
+        _message.value = "AI 모델을 ${mode.title}으로 변경했습니다."
     }
 
     fun aiModelLabel(taskType: AiTaskType, highestQuality: Boolean = false): String =
