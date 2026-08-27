@@ -174,7 +174,7 @@ internal fun OriginalColorMatchDialog(
                     rowUris.forEachIndexed { columnIndex, uri ->
                         val index = rowIndex * columns + columnIndex
                         OutlinedCard(
-                            Modifier.weight(1f).clickable { selectedPreviewUri = uri },
+                            Modifier.weight(1f).clickable(enabled = !state.loading) { selectedPreviewUri = uri },
                             colors = CardDefaults.outlinedCardColors(
                                 if (selectedPreviewUri == uri) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
                             ),
@@ -189,9 +189,10 @@ internal fun OriginalColorMatchDialog(
             val selectedIndex = selectedPreviewUri?.let(imageUris::indexOf) ?: -1
             if (selectedIndex >= 0) {
                 Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                    OutlinedButton(onClick = { takePhoto(selectedIndex) }, modifier = Modifier.weight(1f)) { Text("선택 사진 재촬영") }
+                    OutlinedButton(onClick = { takePhoto(selectedIndex) }, enabled = !state.loading, modifier = Modifier.weight(1f)) { Text("선택 사진 재촬영") }
                     OutlinedButton(
                         onClick = { pendingReplaceIndex = selectedIndex; replacePicker.launch(arrayOf("image/*")) },
+                        enabled = !state.loading,
                         modifier = Modifier.weight(1f),
                     ) { Text("갤러리로 교체") }
                     TextButton(
@@ -200,12 +201,13 @@ internal fun OriginalColorMatchDialog(
                             selectedPreviewUri = imageUris.getOrNull(selectedIndex.coerceAtMost(imageUris.lastIndex))
                             resetAnalysis()
                         },
+                        enabled = !state.loading,
                     ) { Text("삭제") }
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                OutlinedButton(onClick = { takePhoto() }, enabled = imageUris.size < 5, modifier = Modifier.weight(1f)) { Text("카메라 추가") }
-                OutlinedButton(onClick = { addPicker.launch(arrayOf("image/*")) }, enabled = imageUris.size < 5, modifier = Modifier.weight(1f)) { Text("갤러리 추가") }
+                OutlinedButton(onClick = { takePhoto() }, enabled = imageUris.size < 5 && !state.loading, modifier = Modifier.weight(1f)) { Text("카메라 추가") }
+                OutlinedButton(onClick = { addPicker.launch(arrayOf("image/*")) }, enabled = imageUris.size < 5 && !state.loading, modifier = Modifier.weight(1f)) { Text("갤러리 추가") }
             }
             if (imageUris.size >= 5) {
                 Text("최대 5장까지 사용할 수 있습니다.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
@@ -217,7 +219,7 @@ internal fun OriginalColorMatchDialog(
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         rowPhotos.forEach { photo ->
                             OutlinedCard(
-                                Modifier.weight(1f).clickable { addProjectPhoto(photo.uri) },
+                                Modifier.weight(1f).clickable(enabled = !state.loading) { addProjectPhoto(photo.uri) },
                                 colors = CardDefaults.outlinedCardColors(
                                     if (photo.uri in imageUris) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
                                 ),
@@ -264,7 +266,7 @@ internal fun OriginalColorMatchDialog(
                         when (state.stage) {
                             "REFERENCE" -> "공식 참고자료 검색 중"
                             "PLAN" -> "부위별 원작 색상과 보유 도료 분석 중"
-                            "PHOTO_PLAN" -> "사용자 사진 기준 색상과 보유 도료 분석 중"
+                            "PHOTO_PLAN" -> "사진 ${imageUris.size}장을 종합해 색상과 보유 도료를 분석 중입니다. 최대 2~3분 걸릴 수 있습니다."
                             else -> "캐릭터/기체 후보 분석 중"
                         },
                     )
@@ -274,17 +276,19 @@ internal fun OriginalColorMatchDialog(
                 Text("인식 후보", style = MaterialTheme.typography.titleLarge)
                 state.candidates.forEach { candidate ->
                     CandidateCard(candidate, candidate == selectedCandidate) {
-                        selectedCandidate = candidate
-                        selectedReference = null
-                        viewModel.searchOriginalReferences(candidate)
+                        if (!state.loading) {
+                            selectedCandidate = candidate
+                            selectedReference = null
+                            viewModel.searchOriginalReferences(candidate)
+                        }
                     }
                 }
             }
             Text("직접 입력", style = MaterialTheme.typography.titleMedium)
-            OutlinedTextField(manualName, { manualName = it }, Modifier.fillMaxWidth(), label = { Text("캐릭터/기체명") }, singleLine = true)
+            OutlinedTextField(manualName, { manualName = it }, Modifier.fillMaxWidth(), enabled = !state.loading, label = { Text("캐릭터/기체명") }, singleLine = true)
             Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                OutlinedTextField(manualWork, { manualWork = it }, Modifier.weight(1f), label = { Text("작품명") }, singleLine = true)
-                OutlinedTextField(manualVersion, { manualVersion = it }, Modifier.weight(1f), label = { Text("버전/의상") }, singleLine = true)
+                OutlinedTextField(manualWork, { manualWork = it }, Modifier.weight(1f), enabled = !state.loading, label = { Text("작품명") }, singleLine = true)
+                OutlinedTextField(manualVersion, { manualVersion = it }, Modifier.weight(1f), enabled = !state.loading, label = { Text("버전/의상") }, singleLine = true)
             }
             OutlinedButton(
                 onClick = {
@@ -309,7 +313,7 @@ internal fun OriginalColorMatchDialog(
             }
             if (selectedCandidate != null) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(ownedOnly, { ownedOnly = it })
+                    Checkbox(ownedOnly, { ownedOnly = it }, enabled = !state.loading)
                     Text(if (ownedOnly) "보유 도료만 사용" else "미보유 도료 포함")
                 }
                 if (state.references.isNotEmpty()) {
@@ -333,7 +337,14 @@ internal fun OriginalColorMatchDialog(
                     },
                     enabled = imageUris.isNotEmpty() && !state.loading,
                     modifier = Modifier.fillMaxWidth(),
-                ) { Text("참고자료 없이 사진만 분석") }
+                ) { Text(if (state.photoAnalysisTimedOut) "다시 시도" else "참고자료 없이 사진만 분석") }
+                if (state.photoAnalysisTimedOut) {
+                    OutlinedButton(
+                        onClick = { showModelChooser = true },
+                        enabled = !state.loading,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("AI 모델 변경") }
+                }
                 Text(
                     "공식 원작 색상이 아닌 촬영 사진의 색상을 기준으로 분석합니다. 조명·카메라 보정·배경색에 따라 실제 색상과 차이가 날 수 있습니다.",
                     style = MaterialTheme.typography.bodySmall,

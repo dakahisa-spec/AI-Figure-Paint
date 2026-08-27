@@ -58,7 +58,9 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
+import java.net.SocketTimeoutException
 import java.time.LocalDate
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -120,6 +122,7 @@ data class OriginalColorMatchUiState(
     val photoWarning: String? = null,
     val notice: String? = null,
     val activeModelLabel: String? = null,
+    val photoAnalysisTimedOut: Boolean = false,
 )
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
@@ -136,6 +139,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val excel = ExcelBackupService(application, db)
     private val aiSettings = AiSettingsStore(application)
     private var aiJob: Job? = null
+    private val originalColorPhotoCache = ConcurrentHashMap<String, String>()
 
     val paints = paintsDao.observeAll().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val projects = projectsDao.observeAll().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -424,7 +428,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         aiJob?.cancel()
         aiJob = viewModelScope.launch {
             val selection = aiSettings.selection(AiTaskType.ORIGINAL_COLOR_MATCH)
-            _originalColorMatchState.value = _originalColorMatchState.value.copy(loading = true, stage = "PLAN", notice = null, activeModelLabel = selection.resultLabel)
+            _originalColorMatchState.value = _originalColorMatchState.value.copy(
+                loading = true,
+                stage = "PLAN",
+                notice = null,
+                activeModelLabel = selection.resultLabel,
+                photoAnalysisTimedOut = false,
+            )
             val apiKey = aiSettings.readApiKey()
             if (apiKey.isBlank()) {
                 _originalColorMatchState.value = _originalColorMatchState.value.copy(loading = false, notice = "AI 연결을 사용할 수 없습니다. 설정에서 API 키를 등록해주세요.")
@@ -468,6 +478,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 stage = "PHOTO_PLAN",
                 notice = null,
                 activeModelLabel = selection.resultLabel,
+                photoAnalysisTimedOut = false,
             )
             val apiKey = aiSettings.readApiKey()
             if (apiKey.isBlank()) {
@@ -490,16 +501,25 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     loading = false,
                     stage = "PHOTO_PLAN",
                     plan = plan,
+                    photoAnalysisTimedOut = false,
                     notice = if (failedCount > 0) {
                         "사진 ${imageUris.size}장 중 ${failedCount}장을 불러오지 못했지만 나머지 사진으로 분석했습니다."
                     } else null,
                 )
             } catch (cancelled: CancellationException) {
                 throw cancelled
+            } catch (_: SocketTimeoutException) {
+                _originalColorMatchState.value = _originalColorMatchState.value.copy(
+                    loading = false,
+                    stage = "REFERENCE",
+                    photoAnalysisTimedOut = true,
+                    notice = "AI 분석 시간이 초과되었습니다. 사진은 그대로 유지됩니다. 잠시 후 다시 시도하거나 다른 AI 모델을 선택해주세요.",
+                )
             } catch (error: Throwable) {
                 _originalColorMatchState.value = _originalColorMatchState.value.copy(
                     loading = false,
                     stage = "REFERENCE",
+                    photoAnalysisTimedOut = false,
                     notice = "사진 기준 도료 분석을 완료하지 못했습니다: ${error.message.orEmpty().take(120)}",
                 )
             }
@@ -539,6 +559,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearOriginalColorMatch() {
         aiJob?.cancel()
+        originalColorPhotoCache.clear()
         _originalColorMatchState.value = OriginalColorMatchUiState()
     }
 
@@ -1031,14 +1052,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _partsComparisonState.value = PartsComparisonUiState()
     }
 
-    private suspend fun prepareOriginalColorPhotos(imageUris: List<String>): Pair<List<String>, Int> {
+    private suspend fun prepareOriginalColorPhotos(imageUris: List<String>): Pair<List<String>, Int> = withContext(Dispatchers.IO) {
         val uniqueUris = imageUris.distinct().take(5)
         require(uniqueUris.isNotEmpty()) { "원작 컬러 매칭 사진을 한 장 이상 선택해주세요." }
         val dataUrls = mutableListOf<String>()
         var failedCount = 0
         uniqueUris.forEach { imageUri ->
             try {
-                dataUrls += preparePaintPhoto(Uri.parse(imageUri)).dataUrl
+                dataUrls += originalColorPhotoCache.getOrPut(imageUri) {
+                    prepareOriginalColorPhoto(Uri.parse(imageUri))
+                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Throwable) {
@@ -1046,7 +1069,56 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         require(dataUrls.isNotEmpty()) { "선택한 사진을 불러올 수 없습니다." }
-        return dataUrls to failedCount
+        dataUrls to failedCount
+    }
+
+    private fun prepareOriginalColorPhoto(uri: Uri): String {
+        val resolver = getApplication<Application>().contentResolver
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+            ?: error("사진 파일을 읽을 수 없습니다.")
+        require(bounds.outWidth > 0 && bounds.outHeight > 0) { "사진 크기를 확인할 수 없습니다." }
+
+        var sampleSize = 1
+        val sourceLongest = max(bounds.outWidth, bounds.outHeight)
+        while (sourceLongest / (sampleSize * 2) >= 1024) sampleSize *= 2
+        val decoded = resolver.openInputStream(uri)?.use {
+            BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sampleSize })
+        } ?: error("사진 파일을 읽을 수 없습니다.")
+
+        var working = scaleBitmapToLongest(decoded, 1024)
+        if (working !== decoded) decoded.recycle()
+        try {
+            var bytes = compressJpeg(working, 80)
+            if (bytes.size > 700 * 1024) {
+                val fallback = scaleBitmapToLongest(working, 832)
+                if (fallback !== working) {
+                    working.recycle()
+                    working = fallback
+                }
+                bytes = compressJpeg(working, 72)
+            }
+            return "data:image/jpeg;base64,${Base64.encodeToString(bytes, Base64.NO_WRAP)}"
+        } finally {
+            working.recycle()
+        }
+    }
+
+    private fun scaleBitmapToLongest(bitmap: Bitmap, targetLongest: Int): Bitmap {
+        val longest = max(bitmap.width, bitmap.height)
+        if (longest <= targetLongest) return bitmap
+        val scale = targetLongest.toFloat() / longest
+        return Bitmap.createScaledBitmap(
+            bitmap,
+            (bitmap.width * scale).roundToInt().coerceAtLeast(1),
+            (bitmap.height * scale).roundToInt().coerceAtLeast(1),
+            true,
+        )
+    }
+
+    private fun compressJpeg(bitmap: Bitmap, quality: Int): ByteArray = ByteArrayOutputStream().use { output ->
+        check(bitmap.compress(Bitmap.CompressFormat.JPEG, quality, output)) { "사진을 변환하지 못했습니다." }
+        output.toByteArray()
     }
 
     private data class PreparedPaintPhoto(val dataUrl: String, val localHex: String)

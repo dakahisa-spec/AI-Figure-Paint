@@ -807,7 +807,7 @@ class OpenAiService(
                     .put("nearest_paint_name", JSONObject().put("type", "string"))
                     .put("nearest_paint_code", JSONObject().put("type", "string"))
                     .put("single_color_usable", JSONObject().put("type", "boolean"))
-                    .put("mix_options", JSONObject().put("type", "array").put("maxItems", 3).put("items", mixOption)),
+                    .put("mix_options", JSONObject().put("type", "array").put("maxItems", if (photoOnly) 2 else 3).put("items", mixOption)),
             )
         require(imageDataUrls.size in 1..5) { "컬러 분석 사진은 1~5장이 필요합니다." }
         val analysisInstruction = if (photoOnly) {
@@ -837,7 +837,7 @@ class OpenAiService(
 
                     $analysisInstruction
 
-                    아래 도료 목록에서만 nearest와 mix components를 고르세요. 단색이 충분히 가까울 때만 single_color_usable=true로 하세요. 조색안은 최대 3개, 각 안료 비율 합계는 100이며 최소 도료 수를 우선하세요. DB는 변경하지 말고 제안만 반환하세요.
+                    아래 도료 목록에서만 nearest와 mix components를 고르세요. 단색이 충분히 가까울 때만 single_color_usable=true로 하세요. 조색안은 최대 ${if (photoOnly) 2 else 3}개, 각 안료 비율 합계는 100이며 최소 도료 수를 우선하세요. DB는 변경하지 말고 제안만 반환하세요.
 
                     사용 가능 도료(보유만=$ownedOnly):
                     $inventory
@@ -846,12 +846,17 @@ class OpenAiService(
             )
         imageDataUrls.forEachIndexed { index, dataUrl ->
             content.put(JSONObject().put("type", "input_text").put("text", "${if (photoOnly) "분석" else "사용자 보조"} 사진 ${index + 1}/${imageDataUrls.size}"))
-            content.put(JSONObject().put("type", "input_image").put("image_url", dataUrl).put("detail", "high"))
+            content.put(
+                JSONObject()
+                    .put("type", "input_image")
+                    .put("image_url", dataUrl)
+                    .put("detail", if (photoOnly && imageDataUrls.size >= 3) "auto" else "high"),
+            )
         }
         val body = JSONObject()
             .put("model", model)
             .put("store", false)
-            .put("reasoning", JSONObject().put("effort", "high"))
+            .put("reasoning", JSONObject().put("effort", if (photoOnly) "medium" else "high"))
             .apply {
                 if (!photoOnly) {
                     put("tools", JSONArray().put(JSONObject().put("type", "web_search")))
@@ -876,13 +881,13 @@ class OpenAiService(
                                 .put(
                                     "properties",
                                     JSONObject()
-                                        .put("parts", JSONObject().put("type", "array").put("minItems", 1).put("maxItems", 12).put("items", part))
+                                        .put("parts", JSONObject().put("type", "array").put("minItems", 1).put("maxItems", if (photoOnly) 10 else 12).put("items", part))
                                         .put("disclaimer", JSONObject().put("type", "string")),
                                 ),
                         ),
                 ),
             )
-        val json = JSONObject(extractOutputText(post(body)))
+        val json = JSONObject(extractOutputText(post(body, readTimeoutMs = if (photoOnly) 180_000 else 60_000)))
         val parts = buildList {
             val rows = json.optJSONArray("parts") ?: JSONArray()
             for (index in 0 until rows.length()) {
@@ -926,7 +931,7 @@ class OpenAiService(
                         nearestPaintName = nearestPaint?.name.orEmpty(),
                         nearestPaintCode = nearestPaint?.productCode,
                         singleColorUsable = row.optBoolean("single_color_usable", false) && nearestPaint != null,
-                        mixOptions = options.take(3),
+                        mixOptions = options.take(if (photoOnly) 2 else 3),
                     ),
                 )
             }
@@ -1058,11 +1063,11 @@ class OpenAiService(
         return paints.map { paint -> results.firstOrNull { it.paintId == paint.id } ?: AiProductCodeResult(paint.id, emptyList(), "확인할 수 없음") }
     }
 
-    private suspend fun post(body: JSONObject): JSONObject = withContext(Dispatchers.IO) {
+    private suspend fun post(body: JSONObject, readTimeoutMs: Int = 60_000): JSONObject = withContext(Dispatchers.IO) {
         val connection = (URL("https://api.openai.com/v1/responses").openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             connectTimeout = 20_000
-            readTimeout = 60_000
+            readTimeout = readTimeoutMs
             doOutput = true
             setRequestProperty("Authorization", "Bearer $apiKey")
             setRequestProperty("Content-Type", "application/json")
