@@ -266,7 +266,7 @@ internal fun OriginalColorMatchDialog(
                         when (state.stage) {
                             "REFERENCE" -> "공식 참고자료 검색 중"
                             "PLAN" -> "부위별 원작 색상과 보유 도료 분석 중"
-                            "PHOTO_PLAN" -> "사진 ${imageUris.size}장을 종합해 색상과 보유 도료를 분석 중입니다. 최대 2~3분 걸릴 수 있습니다."
+                            "PHOTO_PLAN" -> "사진 ${imageUris.size}장을 종합해 색상과 보유 도료를 분석 중입니다. 최대 2~3분 걸릴 수 있습니다. 앱을 닫지 마세요."
                             else -> "캐릭터/기체 후보 분석 중"
                         },
                     )
@@ -343,7 +343,7 @@ internal fun OriginalColorMatchDialog(
                         onClick = { showModelChooser = true },
                         enabled = !state.loading,
                         modifier = Modifier.fillMaxWidth(),
-                    ) { Text("AI 모델 변경") }
+                    ) { Text("AI 모델 변경 (Terra/Sol 권장)") }
                 }
                 Text(
                     "공식 원작 색상이 아닌 촬영 사진의 색상을 기준으로 분석합니다. 조명·카메라 보정·배경색에 따라 실제 색상과 차이가 날 수 있습니다.",

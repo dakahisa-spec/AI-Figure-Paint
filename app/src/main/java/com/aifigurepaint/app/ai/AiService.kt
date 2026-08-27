@@ -12,6 +12,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
 import java.net.URL
 import java.nio.charset.StandardCharsets
 import java.security.KeyStore
@@ -765,7 +766,11 @@ class OpenAiService(
         require(available.isNotEmpty()) { "조건에 맞는 도료가 없습니다." }
         val allowedIds = available.map { it.id }.toSet()
         val inventory = available.joinToString("\n") {
-            "id=${it.id}; brand=${it.brand}; code=${it.productCode.orEmpty()}; name=${it.name}; korean=${it.koreanName}; hex=${hex(it.colorValue)}; owned=${it.owned}"
+            if (photoOnly) {
+                "id=${it.id}; code=${it.productCode.orEmpty()}; name=${it.koreanName.ifBlank { it.name }}; hex=${hex(it.colorValue)}"
+            } else {
+                "id=${it.id}; brand=${it.brand}; code=${it.productCode.orEmpty()}; name=${it.name}; korean=${it.koreanName}; hex=${hex(it.colorValue)}; owned=${it.owned}"
+            }
         }
         val component = JSONObject()
             .put("type", "object")
@@ -788,7 +793,7 @@ class OpenAiService(
                 JSONObject()
                     .put("label", JSONObject().put("type", "string"))
                     .put("explanation", JSONObject().put("type", "string"))
-                    .put("components", JSONObject().put("type", "array").put("minItems", 1).put("maxItems", 5).put("items", component)),
+                    .put("components", JSONObject().put("type", "array").put("minItems", 1).put("maxItems", if (photoOnly) 3 else 5).put("items", component)),
             )
         val part = JSONObject()
             .put("type", "object")
@@ -807,7 +812,7 @@ class OpenAiService(
                     .put("nearest_paint_name", JSONObject().put("type", "string"))
                     .put("nearest_paint_code", JSONObject().put("type", "string"))
                     .put("single_color_usable", JSONObject().put("type", "boolean"))
-                    .put("mix_options", JSONObject().put("type", "array").put("maxItems", if (photoOnly) 2 else 3).put("items", mixOption)),
+                    .put("mix_options", JSONObject().put("type", "array").put("maxItems", if (photoOnly) 1 else 3).put("items", mixOption)),
             )
         require(imageDataUrls.size in 1..5) { "컬러 분석 사진은 1~5장이 필요합니다." }
         val analysisInstruction = if (photoOnly) {
@@ -837,7 +842,7 @@ class OpenAiService(
 
                     $analysisInstruction
 
-                    아래 도료 목록에서만 nearest와 mix components를 고르세요. 단색이 충분히 가까울 때만 single_color_usable=true로 하세요. 조색안은 최대 ${if (photoOnly) 2 else 3}개, 각 안료 비율 합계는 100이며 최소 도료 수를 우선하세요. DB는 변경하지 말고 제안만 반환하세요.
+                    아래 도료 목록에서만 nearest와 mix components를 고르세요. 단색이 충분히 가까울 때만 single_color_usable=true로 하세요. 조색안은 최대 ${if (photoOnly) 1 else 3}개, 각 안료 비율 합계는 100이며 최소 도료 수를 우선하세요. ${if (photoOnly) "주요 부위만 최대 8개로 간결하게 반환하세요." else ""} DB는 변경하지 말고 제안만 반환하세요.
 
                     사용 가능 도료(보유만=$ownedOnly):
                     $inventory
@@ -850,13 +855,14 @@ class OpenAiService(
                 JSONObject()
                     .put("type", "input_image")
                     .put("image_url", dataUrl)
-                    .put("detail", if (photoOnly && imageDataUrls.size >= 3) "auto" else "high"),
+                    .put("detail", if (photoOnly && imageDataUrls.size >= 3) "low" else "high"),
             )
         }
         val body = JSONObject()
             .put("model", model)
             .put("store", false)
-            .put("reasoning", JSONObject().put("effort", if (photoOnly) "medium" else "high"))
+            .put("reasoning", JSONObject().put("effort", if (photoOnly) "low" else "high"))
+            .apply { if (photoOnly) put("max_output_tokens", 7_000) }
             .apply {
                 if (!photoOnly) {
                     put("tools", JSONArray().put(JSONObject().put("type", "web_search")))
@@ -881,7 +887,7 @@ class OpenAiService(
                                 .put(
                                     "properties",
                                     JSONObject()
-                                        .put("parts", JSONObject().put("type", "array").put("minItems", 1).put("maxItems", if (photoOnly) 10 else 12).put("items", part))
+                                        .put("parts", JSONObject().put("type", "array").put("minItems", 1).put("maxItems", if (photoOnly) 8 else 12).put("items", part))
                                         .put("disclaimer", JSONObject().put("type", "string")),
                                 ),
                         ),
@@ -931,7 +937,7 @@ class OpenAiService(
                         nearestPaintName = nearestPaint?.name.orEmpty(),
                         nearestPaintCode = nearestPaint?.productCode,
                         singleColorUsable = row.optBoolean("single_color_usable", false) && nearestPaint != null,
-                        mixOptions = options.take(if (photoOnly) 2 else 3),
+                        mixOptions = options.take(if (photoOnly) 1 else 3),
                     ),
                 )
             }
@@ -1081,6 +1087,9 @@ class OpenAiService(
             coroutineContext.ensureActive()
             if (code !in 200..299) {
                 val apiMessage = runCatching { JSONObject(text).getJSONObject("error").optString("message") }.getOrNull()
+                if (code == 408 || code == 504 || apiMessage.orEmpty().contains("timeout", ignoreCase = true)) {
+                    throw SocketTimeoutException(apiMessage?.take(180) ?: "AI response timeout")
+                }
                 error(apiMessage?.take(180) ?: "AI 연결 오류 ($code)")
             }
             JSONObject(text)

@@ -516,11 +516,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     notice = "AI 분석 시간이 초과되었습니다. 사진은 그대로 유지됩니다. 잠시 후 다시 시도하거나 다른 AI 모델을 선택해주세요.",
                 )
             } catch (error: Throwable) {
+                val timedOut = error.isAiTimeout()
                 _originalColorMatchState.value = _originalColorMatchState.value.copy(
                     loading = false,
                     stage = "REFERENCE",
-                    photoAnalysisTimedOut = false,
-                    notice = "사진 기준 도료 분석을 완료하지 못했습니다: ${error.message.orEmpty().take(120)}",
+                    photoAnalysisTimedOut = timedOut,
+                    notice = if (timedOut) {
+                        "AI 분석 시간이 초과되었습니다. 사진은 그대로 유지됩니다. 다시 시도하거나 Terra/Sol 모델을 선택해주세요."
+                    } else {
+                        "사진 기준 도료 분석을 완료하지 못했습니다: ${error.message.orEmpty().take(120)}"
+                    },
                 )
             }
         }
@@ -1081,22 +1086,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
         var sampleSize = 1
         val sourceLongest = max(bounds.outWidth, bounds.outHeight)
-        while (sourceLongest / (sampleSize * 2) >= 1024) sampleSize *= 2
+        while (sourceLongest / (sampleSize * 2) >= 768) sampleSize *= 2
         val decoded = resolver.openInputStream(uri)?.use {
             BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sampleSize })
         } ?: error("사진 파일을 읽을 수 없습니다.")
 
-        var working = scaleBitmapToLongest(decoded, 1024)
+        var working = scaleBitmapToLongest(decoded, 768)
         if (working !== decoded) decoded.recycle()
         try {
-            var bytes = compressJpeg(working, 80)
-            if (bytes.size > 700 * 1024) {
-                val fallback = scaleBitmapToLongest(working, 832)
+            var bytes = compressJpeg(working, 72)
+            if (bytes.size > 350 * 1024) {
+                val fallback = scaleBitmapToLongest(working, 640)
                 if (fallback !== working) {
                     working.recycle()
                     working = fallback
                 }
-                bytes = compressJpeg(working, 72)
+                bytes = compressJpeg(working, 65)
             }
             return "data:image/jpeg;base64,${Base64.encodeToString(bytes, Base64.NO_WRAP)}"
         } finally {
@@ -1119,6 +1124,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun compressJpeg(bitmap: Bitmap, quality: Int): ByteArray = ByteArrayOutputStream().use { output ->
         check(bitmap.compress(Bitmap.CompressFormat.JPEG, quality, output)) { "사진을 변환하지 못했습니다." }
         output.toByteArray()
+    }
+
+    private fun Throwable.isAiTimeout(): Boolean {
+        var current: Throwable? = this
+        repeat(6) {
+            val error = current ?: return false
+            if (error is SocketTimeoutException) return true
+            val message = error.message.orEmpty().lowercase()
+            if ("timeout" in message || "timed out" in message || "시간 초과" in message) return true
+            current = error.cause
+        }
+        return false
     }
 
     private data class PreparedPaintPhoto(val dataUrl: String, val localHex: String)
