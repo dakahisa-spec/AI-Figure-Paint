@@ -22,9 +22,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -53,6 +55,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
 import com.aifigurepaint.app.AppViewModel
+import com.aifigurepaint.app.ai.AiMixComponent
 import com.aifigurepaint.app.ai.AiMixSuggestion
 import com.aifigurepaint.app.ai.AiModelMode
 import com.aifigurepaint.app.ai.AiOfficialReference
@@ -60,6 +63,7 @@ import com.aifigurepaint.app.ai.AiOriginalColorPart
 import com.aifigurepaint.app.ai.AiOriginalMixOption
 import com.aifigurepaint.app.ai.AiSubjectCandidate
 import com.aifigurepaint.app.data.OriginalColorPlanEntity
+import com.aifigurepaint.app.data.PaintEntity
 import com.aifigurepaint.app.data.PhotoOwner
 import com.aifigurepaint.app.data.ProjectEntity
 import com.aifigurepaint.app.data.RecipeCardRow
@@ -83,6 +87,7 @@ internal fun OriginalColorMatchDialog(
     val aiModelMode by viewModel.aiModelMode.collectAsState()
     val projectPhotos by viewModel.photos(PhotoOwner.PROJECT, project.id).collectAsState(initial = emptyList())
     val savedPlans by viewModel.originalColorPlans(project.id).collectAsState(initial = emptyList())
+    val paints by viewModel.paints.collectAsState()
     val imageUris = remember(project.id) { mutableStateListOf<String>() }
     var selectedPreviewUri by remember(project.id) { mutableStateOf<String?>(null) }
     var initialPhotoLoaded by remember(project.id) { mutableStateOf(false) }
@@ -97,6 +102,7 @@ internal fun OriginalColorMatchDialog(
     var ownedOnly by remember { mutableStateOf(true) }
     var totalMl by remember { mutableStateOf(10.0) }
     var showModelChooser by remember { mutableStateOf(false) }
+    var pendingDeletePlan by remember { mutableStateOf<OriginalColorPlanEntity?>(null) }
 
     LaunchedEffect(projectPhotos, project.photoUri) {
         if (!initialPhotoLoaded) {
@@ -251,7 +257,15 @@ internal fun OriginalColorMatchDialog(
             if (savedPlans.isNotEmpty()) {
                 HorizontalDivider(Modifier.padding(vertical = 4.dp))
                 Text("저장된 원작 컬러", style = MaterialTheme.typography.titleMedium)
-                savedPlans.take(3).forEach { StoredOriginalPlanCard(it) }
+                savedPlans.forEach { plan ->
+                    StoredOriginalPlanCard(
+                        plan = plan,
+                        paints = paints,
+                        totalMl = totalMl,
+                        onTotalMlChange = { totalMl = it },
+                        onDelete = { pendingDeletePlan = plan },
+                    )
+                }
             }
         }
     }
@@ -457,6 +471,26 @@ internal fun OriginalColorMatchDialog(
             dismissButton = { TextButton(onClick = { showModelChooser = false }) { Text("취소") } },
         )
     }
+    pendingDeletePlan?.let { plan ->
+        AlertDialog(
+            onDismissRequest = { pendingDeletePlan = null },
+            title = { Text("저장된 원작 컬러 삭제") },
+            text = {
+                Text(
+                    "${plan.identifiedName} 컬러 플랜을 삭제할까요?\n\n저장된 컬러 플랜만 삭제되며 도료 DB와 이미 저장한 조색 레시피는 유지됩니다.",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.deleteOriginalColorPlan(plan)
+                        pendingDeletePlan = null
+                    },
+                ) { Text("삭제", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { pendingDeletePlan = null }) { Text("취소") } },
+        )
+    }
 }
 
 private fun modelShortLabel(mode: AiModelMode): String = when (mode) {
@@ -582,30 +616,173 @@ private fun partSuggestion(
 )
 
 @Composable
-private fun StoredOriginalPlanCard(plan: OriginalColorPlanEntity) {
+private fun StoredOriginalPlanCard(
+    plan: OriginalColorPlanEntity,
+    paints: List<PaintEntity>,
+    totalMl: Double,
+    onTotalMlChange: (Double) -> Unit,
+    onDelete: () -> Unit,
+) {
     var expanded by remember(plan.id) { mutableStateOf(false) }
-    val parts = remember(plan.partsJson) { storedPartSummaries(plan.partsJson) }
-    OutlinedCard(Modifier.fillMaxWidth().clickable { expanded = !expanded }) {
-        Column(Modifier.padding(9.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            Row {
-                Text(plan.identifiedName, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-                Text("${parts.size}색", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+    val parts = remember(plan.partsJson) { storedOriginalParts(plan.partsJson) }
+    val paintsById = remember(paints) { paints.associateBy { it.id } }
+    OutlinedCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(11.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(
+                    Modifier.weight(1f).clickable { expanded = !expanded },
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Text(plan.identifiedName, style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        if (plan.referenceType == USER_PHOTO_ONLY) "사용자 사진 기준 분석" else "${if (plan.official) "공식" else "공식 확인 안 됨"} · ${plan.referenceTitle}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text("${parts.size}색", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                TextButton(onClick = onDelete) { Text("삭제", color = MaterialTheme.colorScheme.error) }
             }
-            Text(
-                if (plan.referenceType == USER_PHOTO_ONLY) "사용자 사진 기준 분석" else "${plan.referenceType} · ${if (plan.official) "공식" else "공식 확인 안 됨"}",
-                style = MaterialTheme.typography.labelSmall,
-            )
-            if (expanded) parts.forEach { Text("• ${it.first} ${it.second}", style = MaterialTheme.typography.bodySmall) }
+            TextButton(onClick = { expanded = !expanded }, modifier = Modifier.fillMaxWidth()) {
+                Text(if (expanded) "상세 조색 접기" else "색상칩과 상세 조색 보기")
+            }
+            if (expanded) {
+                HorizontalDivider()
+                Text("조색 총량", style = MaterialTheme.typography.titleMedium)
+                Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    listOf(3.0, 5.0, 10.0, 15.0, 20.0).forEach { amount ->
+                        FilterChip(
+                            selected = totalMl == amount,
+                            onClick = { onTotalMlChange(amount) },
+                            label = { Text("${amount.toInt()}ml") },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+                parts.forEach { part ->
+                    StoredOriginalPartDetail(part, paintsById, totalMl)
+                }
+            }
         }
     }
 }
 
-private fun storedPartSummaries(json: String): List<Pair<String, String>> = runCatching {
+@Composable
+private fun StoredOriginalPartDetail(
+    part: AiOriginalColorPart,
+    paintsById: Map<Long, PaintEntity>,
+    totalMl: Double,
+) {
+    val recommended = part.mixOptions.firstOrNull() ?: part.nearestPaintId?.let { paintId ->
+        AiOriginalMixOption(
+            label = "가장 가까운 보유 단색",
+            explanation = "저장 당시 선택된 가장 가까운 보유 도료입니다.",
+            components = listOf(AiMixComponent(paintId, part.nearestPaintName, part.nearestPaintCode, 100.0)),
+        )
+    }
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .32f)),
+        shape = RoundedCornerShape(12.dp),
+    ) {
+        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                ColorSwatch(parseHexColor(part.targetHex, 0xFF808080.toInt()), 52.dp)
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(part.partName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        listOf(part.colorFamily, part.characteristics).filter { it.isNotBlank() }.joinToString(" · "),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text("${formatMl(totalMl)} ml", style = MaterialTheme.typography.titleMedium)
+            }
+            if (recommended == null || recommended.components.isEmpty()) {
+                Text("저장된 조색 구성이 없습니다.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                Text(recommended.label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                recommended.components.forEach { component ->
+                    val paint = paintsById[component.paintId]
+                    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                        ColorSwatch(paint?.colorValue ?: 0xFFB0B0B0.toInt(), 40.dp)
+                        Spacer(Modifier.width(9.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                listOfNotNull(component.productCode?.takeIf { it.isNotBlank() }, component.paintName.takeIf { it.isNotBlank() })
+                                    .joinToString(" ")
+                                    .ifBlank { "도료 정보 없음" },
+                                style = MaterialTheme.typography.titleSmall,
+                            )
+                            Text(
+                                paint?.brand?.takeIf { it.isNotBlank() } ?: "저장 당시 도료",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Text(
+                            "${formatMl(component.percent / 100.0 * totalMl)} ml",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = .14f))
+                }
+                if (recommended.explanation.isNotBlank()) {
+                    Text(recommended.explanation, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+    }
+}
+
+private fun storedOriginalParts(json: String): List<AiOriginalColorPart> = runCatching {
     val rows = JSONArray(json)
     buildList {
         for (index in 0 until rows.length()) {
             val row = rows.optJSONObject(index) ?: continue
-            add(row.optString("partName") to row.optString("targetHex"))
+            val optionsJson = row.optJSONArray("mixOptions") ?: JSONArray()
+            val options = buildList {
+                for (optionIndex in 0 until optionsJson.length()) {
+                    val option = optionsJson.optJSONObject(optionIndex) ?: continue
+                    val componentsJson = option.optJSONArray("components") ?: JSONArray()
+                    val components = buildList {
+                        for (componentIndex in 0 until componentsJson.length()) {
+                            val component = componentsJson.optJSONObject(componentIndex) ?: continue
+                            add(
+                                AiMixComponent(
+                                    paintId = component.optLong("paintId", -1),
+                                    paintName = component.optString("paintName"),
+                                    productCode = component.optString("productCode").takeIf { it.isNotBlank() },
+                                    percent = component.optDouble("percent", 0.0),
+                                ),
+                            )
+                        }
+                    }
+                    add(
+                        AiOriginalMixOption(
+                            label = option.optString("label").ifBlank { "추천 조색" },
+                            explanation = option.optString("explanation"),
+                            components = components,
+                        ),
+                    )
+                }
+            }
+            add(
+                AiOriginalColorPart(
+                    category = row.optString("category"),
+                    partName = row.optString("partName").ifBlank { "도색 부위" },
+                    targetHex = row.optString("targetHex").ifBlank { "#808080" },
+                    rgb = row.optString("rgb"),
+                    colorFamily = row.optString("colorFamily"),
+                    characteristics = row.optString("characteristics"),
+                    nearestPaintId = row.optLong("nearestPaintId", -1).takeIf { it > 0 },
+                    nearestPaintName = row.optString("nearestPaintName"),
+                    nearestPaintCode = row.optString("nearestPaintCode").takeIf { it.isNotBlank() },
+                    singleColorUsable = row.optBoolean("singleColorUsable"),
+                    mixOptions = options,
+                ),
+            )
         }
     }
 }.getOrDefault(emptyList())

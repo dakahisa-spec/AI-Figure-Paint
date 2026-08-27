@@ -13,8 +13,8 @@ android {
         applicationId = "com.aifigurepaint.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 18
-        versionName = "0.7.6"
+        versionCode = 19
+        versionName = "0.7.7"
     }
 
     buildFeatures {

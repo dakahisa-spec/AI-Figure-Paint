@@ -559,6 +559,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deleteOriginalColorPlan(plan: OriginalColorPlanEntity) = viewModelScope.launch {
         runCatching { originalColorPlansDao.delete(plan) }
+            .onSuccess { _message.value = "저장된 원작 컬러를 삭제했습니다." }
             .onFailure { _message.value = "컬러 플랜을 삭제하지 못했습니다." }
     }
 
