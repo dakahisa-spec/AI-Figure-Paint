@@ -335,11 +335,11 @@ internal fun ProjectDetailScreen(
                             }
                         }
                     }
-                    SectionTitle("원작 컬러", if (originalPlans.isEmpty()) "사진 → 공식 자료 → 보유 도료 조색" else "${originalPlans.first().identifiedName} · ${originalPlans.size}개 플랜")
+                    SectionTitle("사진 조색", if (originalPlans.isEmpty()) "사진 1~5장 → 보유 도료 조색" else "${originalPlans.first().identifiedName} · ${originalPlans.size}개 플랜")
                     Button(
                         onClick = { viewModel.clearOriginalColorMatch(); showOriginalColorMatch = true },
                         modifier = Modifier.fillMaxWidth().height(40.dp),
-                    ) { Text(if (originalPlans.isEmpty()) "AI 원작 컬러 매칭" else "원작 컬러 플랜 보기 / 새 분석") }
+                    ) { Text(if (originalPlans.isEmpty()) "AI 사진 조색" else "사진 조색 플랜 보기 / 새 분석") }
                     SectionTitle(
                         "부품 비교",
                         if (project.projectType == ProjectType.MECHANIC) "도색 전후 꽂이판 누락 의심 확인" else "교체 파츠·소품 비교에도 사용 가능",

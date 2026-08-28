@@ -91,19 +91,6 @@ data class AiProductCodeResult(
     val note: String,
 )
 
-data class AiSubjectCandidate(
-    val name: String,
-    val workTitle: String,
-    val versionName: String,
-    val confidence: String,
-    val note: String,
-)
-
-data class AiSubjectRecognitionResult(
-    val candidates: List<AiSubjectCandidate>,
-    val photoWarning: String,
-)
-
 data class AiOfficialReference(
     val title: String,
     val sourceName: String,
@@ -149,20 +136,11 @@ interface AiService {
     suspend fun analyzeProjectPhotos(imageDataUrls: List<String>, captureDate: String): AiProjectDraft
     suspend fun compareParts(baselineImageDataUrl: String, currentImageDataUrl: String): AiPartsComparisonDraft
     suspend fun searchProductCodes(paints: List<PaintEntity>): List<AiProductCodeResult>
-    suspend fun recognizeOriginalSubject(imageDataUrls: List<String>, projectType: String, projectHint: String): AiSubjectRecognitionResult
-    suspend fun searchOriginalReferences(subjectName: String, workTitle: String, versionName: String): List<AiOfficialReference>
-    suspend fun analyzeOriginalColors(
-        imageDataUrls: List<String>,
-        projectType: String,
-        subject: AiSubjectCandidate,
-        reference: AiOfficialReference,
-        paints: List<PaintEntity>,
-        ownedOnly: Boolean,
-    ): AiOriginalColorPlanDraft
     suspend fun analyzePhotoColors(
         imageDataUrls: List<String>,
         projectType: String,
-        subject: AiSubjectCandidate,
+        projectName: String,
+        projectContext: String,
         paints: List<PaintEntity>,
         ownedOnly: Boolean,
     ): AiOriginalColorPlanDraft
@@ -553,224 +531,35 @@ class OpenAiService(
         )
     }
 
-    override suspend fun recognizeOriginalSubject(
-        imageDataUrls: List<String>,
-        projectType: String,
-        projectHint: String,
-    ): AiSubjectRecognitionResult {
-        require(imageDataUrls.size in 1..5) { "원작 컬러 매칭 사진은 1~5장이 필요합니다." }
-        val content = JSONArray()
-            .put(
-                JSONObject().put("type", "input_text").put(
-                    "text",
-                    """
-                    첨부된 ${imageDataUrls.size}장은 동일한 피규어 또는 메카닉을 서로 다른 각도에서 촬영한 사진입니다.
-                    정면·후면·측면·얼굴/헤드·장비 정보를 서로 보완해 하나의 통합 후보 목록을 만드세요. 사진별 결과를 따로 만들지 마세요.
-                    대상을 식별하되 이름을 확정하지 말고 최대 3개 후보만 반환하세요.
-                    프로젝트 타입=$projectType, 기존 프로젝트 정보=$projectHint
-                    작품명, 캐릭터/기체명, 애니메이션판·Ver.Ka·RG·의상 등 구분 가능한 버전을 따로 적으세요.
-                    확실하지 않은 정보는 빈 문자열로 두고 신뢰도는 HIGH/MEDIUM/LOW 중 하나로 표시하세요.
-                    서로 다른 버전을 임의로 섞지 마세요.
-                    일부 사진이 다른 대상으로 보이면 무리하게 합치지 말고 photo_warning에 그 가능성을 명확히 적으세요. 문제가 없으면 빈 문자열로 두세요.
-                    """.trimIndent(),
-                ),
-            )
-        imageDataUrls.forEachIndexed { index, dataUrl ->
-            content.put(JSONObject().put("type", "input_text").put("text", "사용자 사진 ${index + 1}/${imageDataUrls.size}"))
-            content.put(JSONObject().put("type", "input_image").put("image_url", dataUrl).put("detail", "high"))
-        }
-        val candidate = JSONObject()
-            .put("type", "object")
-            .put("additionalProperties", false)
-            .put("required", JSONArray(listOf("name", "work_title", "version_name", "confidence", "note")))
-            .put(
-                "properties",
-                JSONObject()
-                    .put("name", JSONObject().put("type", "string"))
-                    .put("work_title", JSONObject().put("type", "string"))
-                    .put("version_name", JSONObject().put("type", "string"))
-                    .put("confidence", JSONObject().put("type", "string").put("enum", JSONArray(listOf("HIGH", "MEDIUM", "LOW"))))
-                    .put("note", JSONObject().put("type", "string")),
-            )
-        val body = JSONObject()
-            .put("model", model)
-            .put("store", false)
-            .put("reasoning", JSONObject().put("effort", "medium"))
-            .put("input", JSONArray().put(JSONObject().put("role", "user").put("content", content)))
-            .put(
-                "text",
-                JSONObject().put(
-                    "format",
-                    JSONObject()
-                        .put("type", "json_schema")
-                        .put("name", "original_subject_candidates")
-                        .put("strict", true)
-                        .put(
-                            "schema",
-                            JSONObject()
-                                .put("type", "object")
-                                .put("additionalProperties", false)
-                                .put("required", JSONArray(listOf("candidates", "photo_warning")))
-                                .put(
-                                    "properties",
-                                    JSONObject()
-                                        .put("candidates", JSONObject().put("type", "array").put("maxItems", 3).put("items", candidate))
-                                        .put("photo_warning", JSONObject().put("type", "string")),
-                                ),
-                        ),
-                ),
-            )
-        val json = JSONObject(extractOutputText(post(body)))
-        val rows = json.optJSONArray("candidates") ?: JSONArray()
-        val candidates = buildList {
-            for (index in 0 until rows.length()) {
-                val item = rows.optJSONObject(index) ?: continue
-                val name = item.optString("name").trim()
-                if (name.isBlank()) continue
-                add(
-                    AiSubjectCandidate(
-                        name = name,
-                        workTitle = item.optString("work_title").trim(),
-                        versionName = item.optString("version_name").trim(),
-                        confidence = item.optString("confidence", "LOW"),
-                        note = item.optString("note").trim(),
-                    ),
-                )
-            }
-        }
-        return AiSubjectRecognitionResult(candidates, json.optString("photo_warning").trim())
-    }
-
-    override suspend fun searchOriginalReferences(
-        subjectName: String,
-        workTitle: String,
-        versionName: String,
-    ): List<AiOfficialReference> {
-        val reference = JSONObject()
-            .put("type", "object")
-            .put("additionalProperties", false)
-            .put("required", JSONArray(listOf("title", "source_name", "reference_type", "url", "official", "note")))
-            .put(
-                "properties",
-                JSONObject()
-                    .put("title", JSONObject().put("type", "string"))
-                    .put("source_name", JSONObject().put("type", "string"))
-                    .put("reference_type", JSONObject().put("type", "string"))
-                    .put("url", JSONObject().put("type", "string"))
-                    .put("official", JSONObject().put("type", "boolean"))
-                    .put("note", JSONObject().put("type", "string")),
-            )
-        val body = JSONObject()
-            .put("model", model)
-            .put("store", false)
-            .put("reasoning", JSONObject().put("effort", "medium"))
-            .put("tools", JSONArray().put(JSONObject().put("type", "web_search")))
-            .put("tool_choice", "required")
-            .put(
-                "instructions",
-                """
-                선택된 캐릭터/기체의 원작 색상을 확인할 공식 참고자료를 검색합니다. 우선순위는 원작 공식 홈페이지, 제작사 공식 사이트, 공식 캐릭터/메카 페이지, 공식 설정자료, 공식 프라모델·피규어 상품 페이지, 공식 게임/애니메이션 자료, 공식 유통사입니다.
-                팬아트·개인 블로그를 공식 자료로 표시하지 마세요. 실제로 확인한 원본 웹페이지 URL만 반환하고 검색 결과 URL이나 추측 URL을 만들지 마세요.
-                애니메이션판, Ver.Ka, RG, 게임판, 의상 버전처럼 색이 다른 자료를 섞지 말고 최대 5개 후보로 구분하세요. 공식 여부를 확인하지 못하면 official=false로 두고 note에 명시하세요.
-                """.trimIndent(),
-            )
-            .put("input", "대상=$subjectName\n작품=$workTitle\n버전=$versionName\n공식 컬러 참고자료를 찾으세요.")
-            .put(
-                "text",
-                JSONObject().put(
-                    "format",
-                    JSONObject()
-                        .put("type", "json_schema")
-                        .put("name", "official_color_references")
-                        .put("strict", true)
-                        .put(
-                            "schema",
-                            JSONObject()
-                                .put("type", "object")
-                                .put("additionalProperties", false)
-                                .put("required", JSONArray(listOf("references")))
-                                .put("properties", JSONObject().put("references", JSONObject().put("type", "array").put("maxItems", 5).put("items", reference))),
-                        ),
-                ),
-            )
-        val rows = JSONObject(extractOutputText(post(body))).optJSONArray("references") ?: JSONArray()
-        return buildList {
-            for (index in 0 until rows.length()) {
-                val item = rows.optJSONObject(index) ?: continue
-                val url = item.optString("url").trim()
-                if (!url.startsWith("https://") && !url.startsWith("http://")) continue
-                add(
-                    AiOfficialReference(
-                        title = item.optString("title").trim(),
-                        sourceName = item.optString("source_name").trim(),
-                        referenceType = item.optString("reference_type").trim(),
-                        url = url,
-                        official = item.optBoolean("official", false),
-                        note = item.optString("note").trim(),
-                    ),
-                )
-            }
-        }.distinctBy { it.url }
-    }
-
-    override suspend fun analyzeOriginalColors(
-        imageDataUrls: List<String>,
-        projectType: String,
-        subject: AiSubjectCandidate,
-        reference: AiOfficialReference,
-        paints: List<PaintEntity>,
-        ownedOnly: Boolean,
-    ): AiOriginalColorPlanDraft = analyzeColorPlan(
-        imageDataUrls = imageDataUrls,
-        projectType = projectType,
-        subject = subject,
-        reference = reference,
-        paints = paints,
-        ownedOnly = ownedOnly,
-        photoOnly = false,
-    )
-
     override suspend fun analyzePhotoColors(
         imageDataUrls: List<String>,
         projectType: String,
-        subject: AiSubjectCandidate,
+        projectName: String,
+        projectContext: String,
         paints: List<PaintEntity>,
         ownedOnly: Boolean,
     ): AiOriginalColorPlanDraft = analyzeColorPlan(
         imageDataUrls = imageDataUrls,
         projectType = projectType,
-        subject = subject,
-        reference = AiOfficialReference(
-            title = "사용자 사진 기준 분석",
-            sourceName = "등록 사진",
-            referenceType = "USER_PHOTO_ONLY",
-            url = "",
-            official = false,
-            note = "공식 원작 자료가 아닌 사용자 사진 기준 분석",
-        ),
+        projectName = projectName,
+        projectContext = projectContext,
         paints = paints,
         ownedOnly = ownedOnly,
-        photoOnly = true,
     )
 
     private suspend fun analyzeColorPlan(
         imageDataUrls: List<String>,
         projectType: String,
-        subject: AiSubjectCandidate,
-        reference: AiOfficialReference,
+        projectName: String,
+        projectContext: String,
         paints: List<PaintEntity>,
         ownedOnly: Boolean,
-        photoOnly: Boolean,
     ): AiOriginalColorPlanDraft {
         val available = paints.filter { !ownedOnly || it.owned }
         require(available.isNotEmpty()) { "조건에 맞는 도료가 없습니다." }
         val allowedIds = available.map { it.id }.toSet()
         val inventory = available.joinToString("\n") {
-            if (photoOnly) {
-                "id=${it.id}; code=${it.productCode.orEmpty()}; name=${it.koreanName.ifBlank { it.name }}; hex=${hex(it.colorValue)}"
-            } else {
-                "id=${it.id}; brand=${it.brand}; code=${it.productCode.orEmpty()}; name=${it.name}; korean=${it.koreanName}; hex=${hex(it.colorValue)}; owned=${it.owned}"
-            }
+            "id=${it.id}; code=${it.productCode.orEmpty()}; name=${it.koreanName.ifBlank { it.name }}; hex=${hex(it.colorValue)}"
         }
         val component = JSONObject()
             .put("type", "object")
@@ -793,7 +582,7 @@ class OpenAiService(
                 JSONObject()
                     .put("label", JSONObject().put("type", "string"))
                     .put("explanation", JSONObject().put("type", "string"))
-                    .put("components", JSONObject().put("type", "array").put("minItems", 1).put("maxItems", if (photoOnly) 3 else 5).put("items", component)),
+                    .put("components", JSONObject().put("type", "array").put("minItems", 1).put("maxItems", 3).put("items", component)),
             )
         val part = JSONObject()
             .put("type", "object")
@@ -812,37 +601,29 @@ class OpenAiService(
                     .put("nearest_paint_name", JSONObject().put("type", "string"))
                     .put("nearest_paint_code", JSONObject().put("type", "string"))
                     .put("single_color_usable", JSONObject().put("type", "boolean"))
-                    .put("mix_options", JSONObject().put("type", "array").put("maxItems", if (photoOnly) 1 else 3).put("items", mixOption)),
+                    .put("mix_options", JSONObject().put("type", "array").put("maxItems", 2).put("items", mixOption)),
             )
         require(imageDataUrls.size in 1..5) { "컬러 분석 사진은 1~5장이 필요합니다." }
-        val analysisInstruction = if (photoOnly) {
-            """
-            공식 참고자료나 웹 검색을 사용하지 마세요. 첨부된 ${imageDataUrls.size}장의 사용자 사진만 기준으로 하나의 통합 컬러 플랜을 만드세요. 모든 사진은 같은 대상을 여러 각도에서 촬영한 것으로 간주하되 서로 다른 대상으로 보이면 characteristics에 사용자 확인 필요를 표시하세요.
-            사진 사이의 색온도, 실내·야외 조명, 그림자, 하이라이트, 카메라 자동 보정, 배경 반사, 유광·무광 반사를 비교해 공통으로 확인되는 실제 도장색을 추정하세요. 한 장의 가장 밝거나 어두운 색, 전체 평균색을 그대로 기준으로 삼지 마세요. 조명 영향이 크거나 확신하기 어려운 색은 characteristics에 '조명 영향 가능성' 또는 '사진상 추정색'을 표시하세요.
-            실제 사진에서 확인되는 주요 도색 부위만 분리하세요. Mechanic이면 외장·프레임·관절·무장·버니어·센서·투명 부품, Figure이면 피부·머리 메인/음영·눈·의상 메인/서브·장식·무기·소품을 우선하되 보이지 않는 부위는 만들지 마세요.
-            이 결과는 공식 원작 색상이 아니라 사용자 사진 기준 예상색입니다. disclaimer에는 조명, 카메라 보정, 배경색, 도료 안료, 바탕색, 희석비와 도막 두께에 따른 차이를 반드시 안내하세요.
-            """.trimIndent()
-        } else {
-            """
-            선택된 URL의 자료를 웹 검색으로 다시 확인하세요. 첨부된 ${imageDataUrls.size}장의 사용자 사진은 동일 대상의 여러 각도이며 버전·의상·장비·실제 존재 부위를 확인하는 보조로만 종합 사용하세요. 사용자 사진의 조명색을 공식 설정색으로 사용하지 말고 서로 다른 버전의 색을 섞지 마세요.
-            전체 평균색이 아니라 실제로 확인되는 주요 도색 부위를 분리하세요. Mechanic이면 외장·프레임·무장·버니어·센서, Figure이면 피부·머리·눈·의상·소품 범주를 우선하되 보이지 않는 부위는 만들지 마세요.
-            색상은 원작 참고 기반 예상값이며 화면 캡처·조명·렌더링·색보정 오차를 고려하세요.
-            """.trimIndent()
-        }
+        val analysisInstruction = """
+            인터넷 검색, 공식자료 검색, 캐릭터·기체 이름 식별을 하지 마세요. 첨부된 ${imageDataUrls.size}장의 사진만 한 번에 종합 분석하세요.
+            모든 사진은 같은 대상을 여러 각도에서 촬영한 것으로 간주하되 서로 다른 대상으로 보이면 characteristics에 사용자 확인 필요를 표시하세요.
+            사진 사이의 색온도, 조명, 그림자, 하이라이트, 화이트밸런스, 배경 반사를 비교해 공통으로 확인되는 도장색을 추정하세요. 전체 평균색을 그대로 기준으로 삼지 마세요.
+            실제 사진에서 확실히 보이는 주요 도색 부위만 최대 8개로 분리하세요. Mechanic은 외장 메인/서브·프레임·무장·버니어·센서·포인트 색상, Figure는 피부/그림자·머리/그림자·의상·장식·무기/소품을 우선하되 보이지 않는 부위는 만들지 마세요.
+            color_family에는 색 계열을, characteristics에는 명도·채도와 조명 영향 여부를 적으세요.
+            결과는 사진 기준 예상 조색이며 disclaimer에는 조명, 카메라 화이트밸런스, 화면 보정, 배경색, 도료 안료, 바탕색, 희석비와 도막 두께에 따른 차이를 안내하세요.
+        """.trimIndent()
         val content = JSONArray()
             .put(
                 JSONObject().put("type", "input_text").put(
                     "text",
                     """
-                    확인 대상: ${subject.name} / ${subject.workTitle} / ${subject.versionName}
                     프로젝트 타입: $projectType
-                    사용자가 선택한 참고자료: ${reference.title} / ${reference.referenceType} / ${reference.sourceName}
-                    URL: ${reference.url}
-                    공식 확인: ${reference.official}
+                    프로젝트명: $projectName
+                    참고용 프로젝트 정보: $projectContext
 
                     $analysisInstruction
 
-                    아래 도료 목록에서만 nearest와 mix components를 고르세요. 단색이 충분히 가까울 때만 single_color_usable=true로 하세요. 조색안은 최대 ${if (photoOnly) 1 else 3}개, 각 안료 비율 합계는 100이며 최소 도료 수를 우선하세요. ${if (photoOnly) "주요 부위만 최대 8개로 간결하게 반환하세요." else ""} DB는 변경하지 말고 제안만 반환하세요.
+                    아래 후보 도료에서만 nearest와 mix components를 고르세요. 단색이 충분히 가까우면 single_color_usable=true와 100% 단색안을 우선하세요. 단색으로 어렵다면 최소 2~3색으로 추천 A를 만들고 의미 있는 대안이 있을 때만 추천 B를 추가하세요. 각 안료 비율 합계는 100이어야 하며 DB는 변경하지 마세요.
 
                     사용 가능 도료(보유만=$ownedOnly):
                     $inventory
@@ -850,25 +631,19 @@ class OpenAiService(
                 ),
             )
         imageDataUrls.forEachIndexed { index, dataUrl ->
-            content.put(JSONObject().put("type", "input_text").put("text", "${if (photoOnly) "분석" else "사용자 보조"} 사진 ${index + 1}/${imageDataUrls.size}"))
+            content.put(JSONObject().put("type", "input_text").put("text", "분석 사진 ${index + 1}/${imageDataUrls.size}"))
             content.put(
                 JSONObject()
                     .put("type", "input_image")
                     .put("image_url", dataUrl)
-                    .put("detail", if (photoOnly && imageDataUrls.size >= 3) "low" else "high"),
+                    .put("detail", if (imageDataUrls.size >= 3) "low" else "high"),
             )
         }
         val body = JSONObject()
             .put("model", model)
             .put("store", false)
-            .put("reasoning", JSONObject().put("effort", if (photoOnly) "low" else "high"))
-            .apply { if (photoOnly) put("max_output_tokens", 7_000) }
-            .apply {
-                if (!photoOnly) {
-                    put("tools", JSONArray().put(JSONObject().put("type", "web_search")))
-                    put("tool_choice", "required")
-                }
-            }
+            .put("reasoning", JSONObject().put("effort", "low"))
+            .put("max_output_tokens", 6_000)
             .put("input", JSONArray().put(JSONObject().put("role", "user").put("content", content)))
             .put(
                 "text",
@@ -876,7 +651,7 @@ class OpenAiService(
                     "format",
                     JSONObject()
                         .put("type", "json_schema")
-                        .put("name", "original_color_plan")
+                        .put("name", "photo_color_plan")
                         .put("strict", true)
                         .put(
                             "schema",
@@ -887,13 +662,13 @@ class OpenAiService(
                                 .put(
                                     "properties",
                                     JSONObject()
-                                        .put("parts", JSONObject().put("type", "array").put("minItems", 1).put("maxItems", if (photoOnly) 8 else 12).put("items", part))
+                                        .put("parts", JSONObject().put("type", "array").put("minItems", 1).put("maxItems", 8).put("items", part))
                                         .put("disclaimer", JSONObject().put("type", "string")),
                                 ),
                         ),
                 ),
             )
-        val json = JSONObject(extractOutputText(post(body, readTimeoutMs = if (photoOnly) 180_000 else 60_000)))
+        val json = JSONObject(extractOutputText(post(body, readTimeoutMs = 180_000)))
         val parts = buildList {
             val rows = json.optJSONArray("parts") ?: JSONArray()
             for (index in 0 until rows.length()) {
@@ -937,23 +712,26 @@ class OpenAiService(
                         nearestPaintName = nearestPaint?.name.orEmpty(),
                         nearestPaintCode = nearestPaint?.productCode,
                         singleColorUsable = row.optBoolean("single_color_usable", false) && nearestPaint != null,
-                        mixOptions = options.take(if (photoOnly) 1 else 3),
+                        mixOptions = options.take(2),
                     ),
                 )
             }
         }
         return AiOriginalColorPlanDraft(
-            subjectName = subject.name,
-            workTitle = subject.workTitle,
-            versionName = subject.versionName,
-            reference = reference,
+            subjectName = projectName.ifBlank { "사진 조색" },
+            workTitle = "",
+            versionName = "",
+            reference = AiOfficialReference(
+                title = "사용자 사진 기준 분석",
+                sourceName = "등록 사진",
+                referenceType = "USER_PHOTO_ONLY",
+                url = "",
+                official = false,
+                note = "공식 원작 자료가 아닌 사용자 사진 기준 분석",
+            ),
             parts = parts,
             disclaimer = json.optString("disclaimer").ifBlank {
-                if (photoOnly) {
-                    "공식 원작 색상이 아닌 사용자 사진 기준 분석입니다. 조명, 카메라 보정, 배경색, 도료의 안료 특성, 바탕색, 희석비 및 도막 두께에 따라 결과가 달라질 수 있습니다."
-                } else {
-                    "실제 결과는 도료의 안료 특성, 바탕색, 희석비 및 도막 두께에 따라 달라질 수 있습니다."
-                }
+                "사진의 색상은 촬영 조명, 카메라 화이트밸런스, 화면 보정, 배경색과 도료의 안료 특성, 바탕색, 희석비 및 도막 두께에 따라 실제 색과 차이가 날 수 있습니다."
             },
         )
     }

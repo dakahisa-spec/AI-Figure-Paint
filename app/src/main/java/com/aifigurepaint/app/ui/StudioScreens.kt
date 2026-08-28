@@ -762,8 +762,8 @@ private fun WideProjectDetail(
         }
         Column(Modifier.weight(.52f).fillMaxHeight().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                SectionTitle("원작 컬러", if (originalPlans.isEmpty()) "공식 자료 기반 조색" else "${originalPlans.first().identifiedName} · ${originalPlans.size}개")
-                Button(onClick = { viewModel.clearOriginalColorMatch(); showOriginalColorMatch = true }) { Text("AI 매칭") }
+                SectionTitle("사진 조색", if (originalPlans.isEmpty()) "사진 색상 기반 조색" else "${originalPlans.first().identifiedName} · ${originalPlans.size}개")
+                Button(onClick = { viewModel.clearOriginalColorMatch(); showOriginalColorMatch = true }) { Text("AI 조색") }
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 SectionTitle("부품 비교", if (project.projectType == ProjectType.MECHANIC) "누락 의심 확인" else "교체 파츠 비교")

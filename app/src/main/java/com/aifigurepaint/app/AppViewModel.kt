@@ -10,17 +10,17 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.room.withTransaction
 import com.aifigurepaint.app.ai.AiMixRequest
+import com.aifigurepaint.app.ai.AiMixComponent
 import com.aifigurepaint.app.ai.AiMixSuggestion
 import com.aifigurepaint.app.ai.AiModelMode
 import com.aifigurepaint.app.ai.AiTaskType
 import com.aifigurepaint.app.ai.AiPaintDraft
-import com.aifigurepaint.app.ai.AiOfficialReference
 import com.aifigurepaint.app.ai.AiOriginalColorPlanDraft
 import com.aifigurepaint.app.ai.AiOriginalColorPart
+import com.aifigurepaint.app.ai.AiOriginalMixOption
 import com.aifigurepaint.app.ai.AiPartsComparisonDraft
 import com.aifigurepaint.app.ai.AiProjectDraft
 import com.aifigurepaint.app.ai.AiProductCodeResult
-import com.aifigurepaint.app.ai.AiSubjectCandidate
 import com.aifigurepaint.app.ai.AiSettingsStore
 import com.aifigurepaint.app.ai.LocalColorEngine
 import com.aifigurepaint.app.ai.OpenAiService
@@ -116,10 +116,7 @@ data class ProductCodeSearchUiState(
 data class OriginalColorMatchUiState(
     val loading: Boolean = false,
     val stage: String = "PHOTO",
-    val candidates: List<AiSubjectCandidate> = emptyList(),
-    val references: List<AiOfficialReference> = emptyList(),
     val plan: AiOriginalColorPlanDraft? = null,
-    val photoWarning: String? = null,
     val notice: String? = null,
     val activeModelLabel: String? = null,
     val photoAnalysisTimedOut: Boolean = false,
@@ -139,7 +136,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val excel = ExcelBackupService(application, db)
     private val aiSettings = AiSettingsStore(application)
     private var aiJob: Job? = null
-    private val originalColorPhotoCache = ConcurrentHashMap<String, String>()
+    private data class PreparedOriginalColorPhoto(val dataUrl: String, val sampledColors: List<Int>)
+    private data class PreparedOriginalColorPhotos(val dataUrls: List<String>, val failedCount: Int, val sampledColors: List<Int>)
+    private val originalColorPhotoCache = ConcurrentHashMap<String, PreparedOriginalColorPhoto>()
 
     val paints = paintsDao.observeAll().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val projects = projectsDao.observeAll().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -356,176 +355,69 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun partComparisons(projectId: Long): Flow<List<PartComparisonEntity>> = partComparisonsDao.observeForProject(projectId)
     fun originalColorPlans(projectId: Long): Flow<List<OriginalColorPlanEntity>> = originalColorPlansDao.observeForProject(projectId)
 
-    fun recognizeOriginalSubject(project: ProjectEntity, imageUris: List<String>) {
-        aiJob?.cancel()
-        aiJob = viewModelScope.launch {
-            val selection = aiSettings.selection(AiTaskType.ORIGINAL_COLOR_MATCH)
-            _originalColorMatchState.value = OriginalColorMatchUiState(loading = true, stage = "RECOGNIZE", activeModelLabel = selection.resultLabel)
-            val apiKey = aiSettings.readApiKey()
-            if (apiKey.isBlank()) {
-                _originalColorMatchState.value = OriginalColorMatchUiState(stage = "PHOTO", notice = "AI 연결을 사용할 수 없습니다. 설정에서 API 키를 등록해주세요.", activeModelLabel = selection.resultLabel)
-                return@launch
-            }
-            try {
-                val (photos, failedCount) = prepareOriginalColorPhotos(imageUris)
-                val result = OpenAiService(apiKey, selection).recognizeOriginalSubject(
-                    photos,
-                    project.projectType,
-                    "이름=${project.name}; 모델=${project.modelName}; 메모=${project.memo.take(200)}",
-                )
-                _originalColorMatchState.value = OriginalColorMatchUiState(
-                    stage = "CANDIDATE",
-                    candidates = result.candidates,
-                    photoWarning = result.photoWarning.takeIf { it.isNotBlank() },
-                    notice = when {
-                        result.candidates.isEmpty() -> "대상을 인식하지 못했습니다. 이름을 직접 입력해주세요."
-                        failedCount > 0 -> "사진 ${imageUris.size}장 중 ${failedCount}장을 불러오지 못했지만 나머지 사진으로 분석했습니다."
-                        else -> null
-                    },
-                    activeModelLabel = selection.resultLabel,
-                )
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Throwable) {
-                _originalColorMatchState.value = OriginalColorMatchUiState(stage = "PHOTO", notice = "대상 인식을 완료하지 못했습니다: ${error.message.orEmpty().take(120)}", activeModelLabel = selection.resultLabel)
-            }
-        }
-    }
-
-    fun searchOriginalReferences(candidate: AiSubjectCandidate) {
-        aiJob?.cancel()
-        aiJob = viewModelScope.launch {
-            val selection = aiSettings.selection(AiTaskType.ORIGINAL_COLOR_MATCH)
-            _originalColorMatchState.value = _originalColorMatchState.value.copy(loading = true, stage = "REFERENCE", notice = null, activeModelLabel = selection.resultLabel)
-            val apiKey = aiSettings.readApiKey()
-            if (apiKey.isBlank()) {
-                _originalColorMatchState.value = _originalColorMatchState.value.copy(loading = false, notice = "AI 연결을 사용할 수 없습니다. 설정에서 API 키를 등록해주세요.")
-                return@launch
-            }
-            try {
-                val references = OpenAiService(apiKey, selection).searchOriginalReferences(candidate.name, candidate.workTitle, candidate.versionName)
-                _originalColorMatchState.value = _originalColorMatchState.value.copy(
-                    loading = false,
-                    stage = "REFERENCE",
-                    references = references,
-                    notice = if (references.isEmpty()) "공식 참고자료를 확인하지 못했습니다. 사진 자체를 기준으로 분석할 수 있습니다." else null,
-                )
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Throwable) {
-                _originalColorMatchState.value = _originalColorMatchState.value.copy(loading = false, stage = "REFERENCE", notice = "공식 자료를 검색할 수 없습니다: ${error.message.orEmpty().take(120)}")
-            }
-        }
-    }
-
-    fun analyzeOriginalColors(
-        project: ProjectEntity,
-        imageUris: List<String>,
-        candidate: AiSubjectCandidate,
-        reference: AiOfficialReference,
-        ownedOnly: Boolean,
-    ) {
-        aiJob?.cancel()
-        aiJob = viewModelScope.launch {
-            val selection = aiSettings.selection(AiTaskType.ORIGINAL_COLOR_MATCH)
-            _originalColorMatchState.value = _originalColorMatchState.value.copy(
-                loading = true,
-                stage = "PLAN",
-                notice = null,
-                activeModelLabel = selection.resultLabel,
-                photoAnalysisTimedOut = false,
-            )
-            val apiKey = aiSettings.readApiKey()
-            if (apiKey.isBlank()) {
-                _originalColorMatchState.value = _originalColorMatchState.value.copy(loading = false, notice = "AI 연결을 사용할 수 없습니다. 설정에서 API 키를 등록해주세요.")
-                return@launch
-            }
-            try {
-                val (photos, failedCount) = prepareOriginalColorPhotos(imageUris)
-                val plan = OpenAiService(apiKey, selection).analyzeOriginalColors(
-                    photos,
-                    project.projectType,
-                    candidate,
-                    reference,
-                    paints.value,
-                    ownedOnly,
-                )
-                _originalColorMatchState.value = _originalColorMatchState.value.copy(
-                    loading = false,
-                    stage = "PLAN",
-                    plan = plan,
-                    notice = if (failedCount > 0) "사진 ${imageUris.size}장 중 ${failedCount}장을 불러오지 못했지만 나머지 사진으로 분석했습니다." else null,
-                )
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Throwable) {
-                _originalColorMatchState.value = _originalColorMatchState.value.copy(loading = false, stage = "REFERENCE", notice = "원작 색상 분석을 완료하지 못했습니다: ${error.message.orEmpty().take(120)}")
-            }
-        }
-    }
-
     fun analyzePhotoColors(
         project: ProjectEntity,
         imageUris: List<String>,
-        candidate: AiSubjectCandidate,
         ownedOnly: Boolean,
     ) {
         aiJob?.cancel()
         aiJob = viewModelScope.launch {
             val selection = aiSettings.selection(AiTaskType.ORIGINAL_COLOR_MATCH)
-            _originalColorMatchState.value = _originalColorMatchState.value.copy(
+            _originalColorMatchState.value = OriginalColorMatchUiState(
                 loading = true,
                 stage = "PHOTO_PLAN",
-                notice = null,
                 activeModelLabel = selection.resultLabel,
-                photoAnalysisTimedOut = false,
             )
             val apiKey = aiSettings.readApiKey()
             if (apiKey.isBlank()) {
-                _originalColorMatchState.value = _originalColorMatchState.value.copy(
-                    loading = false,
+                _originalColorMatchState.value = OriginalColorMatchUiState(
                     notice = "AI 연결을 사용할 수 없습니다. 기존 설정에서 API 키를 확인해주세요.",
+                    activeModelLabel = selection.resultLabel,
                 )
                 return@launch
             }
             try {
-                val (photos, failedCount) = prepareOriginalColorPhotos(imageUris)
-                val plan = OpenAiService(apiKey, selection).analyzePhotoColors(
-                    imageDataUrls = photos,
+                val prepared = prepareOriginalColorPhotos(imageUris)
+                val available = paints.value.filter { !ownedOnly || it.owned }
+                require(available.isNotEmpty()) { "조건에 맞는 도료가 없습니다." }
+                val candidates = selectPhotoPaintCandidates(available, prepared.sampledColors)
+                val aiPlan = OpenAiService(apiKey, selection).analyzePhotoColors(
+                    imageDataUrls = prepared.dataUrls,
                     projectType = project.projectType,
-                    subject = candidate,
-                    paints = paints.value,
+                    projectName = project.name,
+                    projectContext = "모델=${project.modelName}; 메모=${project.memo.take(200)}",
+                    paints = candidates,
                     ownedOnly = ownedOnly,
                 )
-                _originalColorMatchState.value = _originalColorMatchState.value.copy(
-                    loading = false,
+                val plan = applyLocalPaintMatches(aiPlan, available)
+                _originalColorMatchState.value = OriginalColorMatchUiState(
                     stage = "PHOTO_PLAN",
                     plan = plan,
-                    photoAnalysisTimedOut = false,
-                    notice = if (failedCount > 0) {
-                        "사진 ${imageUris.size}장 중 ${failedCount}장을 불러오지 못했지만 나머지 사진으로 분석했습니다."
+                    activeModelLabel = selection.resultLabel,
+                    notice = if (prepared.failedCount > 0) {
+                        "사진 ${imageUris.size}장 중 ${prepared.failedCount}장을 불러오지 못했지만 나머지 사진으로 분석했습니다."
                     } else null,
                 )
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: SocketTimeoutException) {
-                _originalColorMatchState.value = _originalColorMatchState.value.copy(
-                    loading = false,
-                    stage = "REFERENCE",
+                _originalColorMatchState.value = OriginalColorMatchUiState(
+                    stage = "PHOTO",
                     photoAnalysisTimedOut = true,
-                    notice = "AI 분석 시간이 초과되었습니다. 사진은 그대로 유지됩니다. 잠시 후 다시 시도하거나 다른 AI 모델을 선택해주세요.",
+                    notice = "AI 사진 조색 시간이 초과되었습니다. 사진은 그대로 유지됩니다. 다시 시도하거나 다른 AI 모델을 선택해주세요.",
+                    activeModelLabel = selection.resultLabel,
                 )
             } catch (error: Throwable) {
                 val timedOut = error.isAiTimeout()
-                _originalColorMatchState.value = _originalColorMatchState.value.copy(
-                    loading = false,
-                    stage = "REFERENCE",
+                _originalColorMatchState.value = OriginalColorMatchUiState(
+                    stage = "PHOTO",
                     photoAnalysisTimedOut = timedOut,
                     notice = if (timedOut) {
-                        "AI 분석 시간이 초과되었습니다. 사진은 그대로 유지됩니다. 다시 시도하거나 Terra/Sol 모델을 선택해주세요."
+                        "AI 사진 조색 시간이 초과되었습니다. 사진은 그대로 유지됩니다. 다시 시도하거나 Terra/Sol 모델을 선택해주세요."
                     } else {
-                        "사진 기준 도료 분석을 완료하지 못했습니다: ${error.message.orEmpty().take(120)}"
+                        "사진 조색을 완료하지 못했습니다: ${error.message.orEmpty().take(120)}"
                     },
+                    activeModelLabel = selection.resultLabel,
                 )
             }
         }
@@ -548,18 +440,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 ),
             )
         }.onSuccess {
-            _message.value = if (plan.reference.referenceType == "USER_PHOTO_ONLY") {
-                "사진 기준 컬러 플랜을 저장했습니다."
-            } else {
-                "원작 컬러 플랜을 저장했습니다."
-            }
+            _message.value = "사진 조색 플랜을 저장했습니다."
             onSaved()
         }.onFailure { _message.value = "컬러 플랜을 저장하지 못했습니다: ${it.message.orEmpty()}" }
     }
 
     fun deleteOriginalColorPlan(plan: OriginalColorPlanEntity) = viewModelScope.launch {
         runCatching { originalColorPlansDao.delete(plan) }
-            .onSuccess { _message.value = "저장된 원작 컬러를 삭제했습니다." }
+            .onSuccess { _message.value = "저장된 사진 조색을 삭제했습니다." }
             .onFailure { _message.value = "컬러 플랜을 삭제하지 못했습니다." }
     }
 
@@ -1058,16 +946,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _partsComparisonState.value = PartsComparisonUiState()
     }
 
-    private suspend fun prepareOriginalColorPhotos(imageUris: List<String>): Pair<List<String>, Int> = withContext(Dispatchers.IO) {
+    private suspend fun prepareOriginalColorPhotos(imageUris: List<String>): PreparedOriginalColorPhotos = withContext(Dispatchers.IO) {
         val uniqueUris = imageUris.distinct().take(5)
-        require(uniqueUris.isNotEmpty()) { "원작 컬러 매칭 사진을 한 장 이상 선택해주세요." }
+        require(uniqueUris.isNotEmpty()) { "사진 조색 사진을 한 장 이상 선택해주세요." }
         val dataUrls = mutableListOf<String>()
+        val sampledColors = mutableListOf<Int>()
         var failedCount = 0
         uniqueUris.forEach { imageUri ->
             try {
-                dataUrls += originalColorPhotoCache.getOrPut(imageUri) {
+                val prepared = originalColorPhotoCache.getOrPut(imageUri) {
                     prepareOriginalColorPhoto(Uri.parse(imageUri))
                 }
+                dataUrls += prepared.dataUrl
+                sampledColors += prepared.sampledColors
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Throwable) {
@@ -1075,15 +966,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         require(dataUrls.isNotEmpty()) { "선택한 사진을 불러올 수 없습니다." }
-        dataUrls to failedCount
+        PreparedOriginalColorPhotos(dataUrls, failedCount, sampledColors.distinct())
     }
 
-    private fun prepareOriginalColorPhoto(uri: Uri): String {
+    private fun prepareOriginalColorPhoto(uri: Uri): PreparedOriginalColorPhoto {
         val resolver = getApplication<Application>().contentResolver
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         val boundsStream = resolver.openInputStream(uri)
             ?: error("사진 파일을 읽을 수 없습니다.")
-        // inJustDecodeBounds는 정상 처리되어도 Bitmap 대신 null을 반환한다.
         boundsStream.use { BitmapFactory.decodeStream(it, null, bounds) }
         require(bounds.outWidth > 0 && bounds.outHeight > 0) { "사진 크기를 확인할 수 없습니다." }
 
@@ -1097,6 +987,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         var working = scaleBitmapToLongest(decoded, 768)
         if (working !== decoded) decoded.recycle()
         try {
+            val colors = sampleBitmapColors(working)
             var bytes = compressJpeg(working, 72)
             if (bytes.size > 350 * 1024) {
                 val fallback = scaleBitmapToLongest(working, 640)
@@ -1106,10 +997,98 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 bytes = compressJpeg(working, 65)
             }
-            return "data:image/jpeg;base64,${Base64.encodeToString(bytes, Base64.NO_WRAP)}"
+            return PreparedOriginalColorPhoto(
+                dataUrl = "data:image/jpeg;base64,${Base64.encodeToString(bytes, Base64.NO_WRAP)}",
+                sampledColors = colors,
+            )
         } finally {
             working.recycle()
         }
+    }
+
+    private fun sampleBitmapColors(bitmap: Bitmap): List<Int> {
+        val counts = HashMap<Int, Int>()
+        val stepX = (bitmap.width / 40).coerceAtLeast(1)
+        val stepY = (bitmap.height / 40).coerceAtLeast(1)
+        var y = stepY / 2
+        while (y < bitmap.height) {
+            var x = stepX / 2
+            while (x < bitmap.width) {
+                val color = bitmap.getPixel(x, y)
+                if (Color.alpha(color) >= 128) {
+                    val r = Color.red(color)
+                    val g = Color.green(color)
+                    val b = Color.blue(color)
+                    val key = ((r / 32) shl 6) or ((g / 32) shl 3) or (b / 32)
+                    val center = x in bitmap.width / 5..bitmap.width * 4 / 5 &&
+                        y in bitmap.height / 5..bitmap.height * 4 / 5
+                    counts[key] = (counts[key] ?: 0) + if (center) 3 else 1
+                }
+                x += stepX
+            }
+            y += stepY
+        }
+        return counts.entries
+            .sortedByDescending { it.value }
+            .map { (key, _) ->
+                Color.rgb(
+                    ((key shr 6) and 7) * 32 + 16,
+                    ((key shr 3) and 7) * 32 + 16,
+                    (key and 7) * 32 + 16,
+                )
+            }
+            .fold(mutableListOf<Int>()) { selected, color ->
+                if (selected.size < 18 && selected.none { rgbDistanceSquared(it, color) < 24 * 24 }) selected += color
+                selected
+            }
+    }
+
+    private fun selectPhotoPaintCandidates(available: List<PaintEntity>, sampledColors: List<Int>): List<PaintEntity> {
+        if (available.size <= 12) return available
+        if (sampledColors.isEmpty()) return available.take(12)
+        val nearest = available
+            .sortedBy { paint -> sampledColors.minOf { rgbDistanceSquared(paint.colorValue, it) } }
+            .take(10)
+            .toMutableList()
+        available.minByOrNull { Color.red(it.colorValue) + Color.green(it.colorValue) + Color.blue(it.colorValue) }
+            ?.let(nearest::add)
+        available.maxByOrNull { Color.red(it.colorValue) + Color.green(it.colorValue) + Color.blue(it.colorValue) }
+            ?.let(nearest::add)
+        return nearest.distinctBy { it.id }.take(12)
+    }
+
+    private fun applyLocalPaintMatches(plan: AiOriginalColorPlanDraft, available: List<PaintEntity>): AiOriginalColorPlanDraft {
+        return plan.copy(
+            parts = plan.parts.map { part ->
+                val target = parseHex(part.targetHex)
+                val nearest = available.minByOrNull { rgbDistanceSquared(it.colorValue, target) }
+                val singleUsable = nearest != null && rgbDistanceSquared(nearest.colorValue, target) <= 32 * 32
+                part.copy(
+                    nearestPaintId = nearest?.id,
+                    nearestPaintName = nearest?.name.orEmpty(),
+                    nearestPaintCode = nearest?.productCode,
+                    singleColorUsable = singleUsable,
+                    mixOptions = if (singleUsable && nearest != null) {
+                        listOf(
+                            AiOriginalMixOption(
+                                label = "단색 사용 가능",
+                                explanation = "사진의 목표색과 가까운 보유 도료입니다.",
+                                components = listOf(AiMixComponent(nearest.id, nearest.name, nearest.productCode, 100.0)),
+                            ),
+                        )
+                    } else {
+                        part.mixOptions.take(2)
+                    },
+                )
+            },
+        )
+    }
+
+    private fun rgbDistanceSquared(first: Int, second: Int): Int {
+        val dr = Color.red(first) - Color.red(second)
+        val dg = Color.green(first) - Color.green(second)
+        val db = Color.blue(first) - Color.blue(second)
+        return dr * dr + dg * dg + db * db
     }
 
     private fun scaleBitmapToLongest(bitmap: Bitmap, targetLongest: Int): Bitmap {
