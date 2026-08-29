@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -262,23 +261,10 @@ internal fun OriginalColorMatchDialog(
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text("AI 모델 변경") }
             }
-            if (savedPlans.isNotEmpty()) {
-                HorizontalDivider(Modifier.padding(vertical = 4.dp))
-                Text("저장된 사진 조색", style = MaterialTheme.typography.titleMedium)
-                savedPlans.forEach { plan ->
-                    StoredOriginalPlanCard(
-                        plan = plan,
-                        paints = paints,
-                        totalMl = totalMl,
-                        onTotalMlChange = { totalMl = it },
-                        onDelete = { pendingDeletePlan = plan },
-                    )
-                }
-            }
         }
     }
 
-    val workflowPane: @Composable () -> Unit = {
+    val workflowPane: @Composable (Boolean) -> Unit = { wideLayout ->
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             if (state.loading) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -300,12 +286,36 @@ internal fun OriginalColorMatchDialog(
                 Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                     listOf(3.0, 5.0, 10.0, 15.0, 20.0).forEach { amount ->
                         OutlinedButton(onClick = { totalMl = amount }, modifier = Modifier.weight(1f)) {
-                            Text("${amount.toInt()}ml", color = if (totalMl == amount) MaterialTheme.colorScheme.primary else Color.Unspecified)
+                            Text(
+                                "${amount.toInt()} ml",
+                                color = if (totalMl == amount) MaterialTheme.colorScheme.primary else Color.Unspecified,
+                                maxLines = 1,
+                                softWrap = false,
+                            )
                         }
                     }
                 }
-                plan.parts.forEach { part ->
-                    OriginalColorPartCard(part, totalMl, recipes, project.id, plan, viewModel)
+                if (wideLayout) {
+                    plan.parts.chunked(2).forEach { rowParts ->
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            rowParts.forEach { part ->
+                                OriginalColorPartCard(
+                                    part = part,
+                                    totalMl = totalMl,
+                                    recipes = recipes,
+                                    projectId = project.id,
+                                    plan = plan,
+                                    viewModel = viewModel,
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                            if (rowParts.size == 1) Spacer(Modifier.weight(1f))
+                        }
+                    }
+                } else {
+                    plan.parts.forEach { part ->
+                        OriginalColorPartCard(part, totalMl, recipes, project.id, plan, viewModel)
+                    }
                 }
                 Text(plan.disclaimer, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Button(
@@ -314,6 +324,25 @@ internal fun OriginalColorMatchDialog(
                 ) { Text("사진 조색 플랜 저장") }
             }
             state.notice?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+        }
+    }
+
+    val savedPlansPane: @Composable (Boolean) -> Unit = { wideLayout ->
+        if (savedPlans.isNotEmpty()) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                HorizontalDivider(Modifier.padding(vertical = 4.dp))
+                Text("저장된 사진 조색", style = MaterialTheme.typography.titleLarge)
+                savedPlans.forEach { plan ->
+                    StoredOriginalPlanCard(
+                        plan = plan,
+                        paints = paints,
+                        totalMl = totalMl,
+                        wideLayout = wideLayout,
+                        onTotalMlChange = { totalMl = it },
+                        onDelete = { pendingDeletePlan = plan },
+                    )
+                }
+            }
         }
     }
 
@@ -336,15 +365,39 @@ internal fun OriginalColorMatchDialog(
                 }
                 BoxWithConstraints(Modifier.fillMaxSize().padding(top = 8.dp)) {
                     if (maxWidth >= 700.dp) {
-                        Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                            Column(Modifier.weight(.38f).fillMaxHeight().verticalScroll(rememberScrollState())) { photoPane(5) }
-                            Column(Modifier.weight(.62f).fillMaxHeight().verticalScroll(rememberScrollState())) { workflowPane() }
+                        Column(
+                            Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(18.dp),
+                        ) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                                Column(Modifier.weight(.42f)) { photoPane(5) }
+                                OutlinedCard(Modifier.weight(.58f)) {
+                                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        Text("사진 조색 안내", style = MaterialTheme.typography.titleLarge)
+                                        Text(
+                                            "왼쪽에서 사진 1~5장을 선택한 뒤 분석하세요. 조색 결과와 저장된 결과는 아래에서 좌우 2열로 표시됩니다.",
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                        Text(
+                                            if (state.plan != null) "분석 완료 · ${state.plan?.parts?.size ?: 0}색"
+                                            else if (state.loading) "등록 사진 ${imageUris.size}장 분석 중"
+                                            else "등록 사진 ${imageUris.size}장 · 저장 플랜 ${savedPlans.size}개",
+                                            style = MaterialTheme.typography.titleMedium,
+                                            color = MaterialTheme.colorScheme.primary,
+                                        )
+                                    }
+                                }
+                            }
+                            workflowPane(true)
+                            savedPlansPane(true)
                         }
                     } else {
                         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
                             photoPane(3)
                             Spacer(Modifier.height(18.dp))
-                            workflowPane()
+                            workflowPane(false)
+                            Spacer(Modifier.height(18.dp))
+                            savedPlansPane(false)
                         }
                     }
                 }
@@ -421,10 +474,11 @@ private fun OriginalColorPartCard(
     projectId: Long,
     plan: com.aifigurepaint.app.ai.AiOriginalColorPlanDraft,
     viewModel: AppViewModel,
+    modifier: Modifier = Modifier,
 ) {
     val closest = remember(recipes, part.targetHex) { recipes.minByOrNull { colorDistance(it.resultColorValue, parseHexColor(part.targetHex, 0xFF808080.toInt())) } }
         ?.takeIf { colorDistance(it.resultColorValue, parseHexColor(part.targetHex, 0xFF808080.toInt())) < 70.0 }
-    OutlinedCard(Modifier.fillMaxWidth()) {
+    OutlinedCard(modifier.fillMaxWidth()) {
         Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 ColorSwatch(parseHexColor(part.targetHex, 0xFF808080.toInt()), 46.dp)
@@ -458,7 +512,7 @@ private fun OriginalColorPartCard(
                     option.components.forEach { component ->
                         Row(Modifier.fillMaxWidth()) {
                             Text(listOfNotNull(component.productCode, component.paintName).joinToString(" "), modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-                            Text("${formatMl(component.percent)}% · ${formatMl(component.percent / 100.0 * totalMl)}ml", style = MaterialTheme.typography.labelMedium)
+                            Text("${formatMl(component.percent)}% · ${formatMl(component.percent / 100.0 * totalMl)} ml", style = MaterialTheme.typography.labelMedium)
                         }
                     }
                     Text(option.explanation, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -498,6 +552,7 @@ private fun StoredOriginalPlanCard(
     plan: OriginalColorPlanEntity,
     paints: List<PaintEntity>,
     totalMl: Double,
+    wideLayout: Boolean,
     onTotalMlChange: (Double) -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -532,13 +587,29 @@ private fun StoredOriginalPlanCard(
                         FilterChip(
                             selected = totalMl == amount,
                             onClick = { onTotalMlChange(amount) },
-                            label = { Text("${amount.toInt()}ml") },
+                            label = { Text("${amount.toInt()} ml", maxLines = 1, softWrap = false) },
                             modifier = Modifier.weight(1f),
                         )
                     }
                 }
-                parts.forEach { part ->
-                    StoredOriginalPartDetail(part, paintsById, totalMl)
+                if (wideLayout) {
+                    parts.chunked(2).forEach { rowParts ->
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            rowParts.forEach { part ->
+                                StoredOriginalPartDetail(
+                                    part = part,
+                                    paintsById = paintsById,
+                                    totalMl = totalMl,
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                            if (rowParts.size == 1) Spacer(Modifier.weight(1f))
+                        }
+                    }
+                } else {
+                    parts.forEach { part ->
+                        StoredOriginalPartDetail(part, paintsById, totalMl)
+                    }
                 }
             }
         }
@@ -550,6 +621,7 @@ private fun StoredOriginalPartDetail(
     part: AiOriginalColorPart,
     paintsById: Map<Long, PaintEntity>,
     totalMl: Double,
+    modifier: Modifier = Modifier,
 ) {
     val recommended = part.mixOptions.firstOrNull() ?: part.nearestPaintId?.let { paintId ->
         AiOriginalMixOption(
@@ -559,6 +631,7 @@ private fun StoredOriginalPartDetail(
         )
     }
     Card(
+        modifier = modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .32f)),
         shape = RoundedCornerShape(12.dp),
     ) {
