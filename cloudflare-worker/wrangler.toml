@@ -5,7 +5,7 @@ compatibility_date = "2026-08-28"
 [[d1_databases]]
 binding = "DB"
 database_name = "ai-figure-paint-gift"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "a2862c2f-f750-4829-8b66-f4d89503a558"
 
 [vars]
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
