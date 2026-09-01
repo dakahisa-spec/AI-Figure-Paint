@@ -149,7 +149,7 @@ internal fun ProjectEditorScreen(
     var memo by remember(project?.id) { mutableStateOf(project?.memo.orEmpty()) }
     var startDate by remember(project?.id) { mutableStateOf(dateToInput(project?.startDate ?: 0)) }
     var status by remember(project?.id) { mutableStateOf(project?.status ?: ProjectStatus.PLANNED) }
-    var projectType by remember(project?.id) { mutableStateOf(project?.projectType ?: ProjectType.FIGURE) }
+    var projectType by remember(project?.id) { mutableStateOf(project?.projectType?.takeIf { it in ProjectType.entries } ?: ProjectType.MECHANIC) }
     var deleteConfirm by remember { mutableStateOf(false) }
     var photosLoaded by remember(project?.id) { mutableStateOf(project == null) }
     val photoUris = remember(project?.id) { mutableStateListOf<String>() }
@@ -342,7 +342,11 @@ internal fun ProjectDetailScreen(
                     ) { Text(if (originalPlans.isEmpty()) "AI 사진 조색" else "사진 조색 플랜 보기 / 새 분석") }
                     SectionTitle(
                         "부품 비교",
-                        if (project.projectType == ProjectType.MECHANIC) "도색 전후 꽂이판 누락 의심 확인" else "교체 파츠·소품 비교에도 사용 가능",
+                        when (project.projectType) {
+                            ProjectType.MILITARY -> "차체·궤도·장비 누락 의심 확인"
+                            ProjectType.AUTO -> "차체·휠·내장 부품 비교"
+                            else -> "도색 전후 꽂이판 누락 의심 확인"
+                        },
                     )
                     if (project.projectType == ProjectType.MECHANIC) {
                         Button(onClick = { viewModel.clearPartsComparison(); showPartsComparison = true }, modifier = Modifier.fillMaxWidth().height(40.dp)) {

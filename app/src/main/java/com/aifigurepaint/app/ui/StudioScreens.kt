@@ -52,7 +52,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -60,6 +59,7 @@ import com.aifigurepaint.app.AppViewModel
 import com.aifigurepaint.app.ai.AiMixSuggestion
 import com.aifigurepaint.app.ai.AiModelMode
 import com.aifigurepaint.app.ai.AiTaskType
+import com.aifigurepaint.app.ai.GiftAccessState
 import com.aifigurepaint.app.data.MixRecipeEntity
 import com.aifigurepaint.app.data.PaintEntity
 import com.aifigurepaint.app.data.ProjectEntity
@@ -72,14 +72,13 @@ import com.aifigurepaint.app.data.StockLevel
 
 @Composable
 internal fun AiSettingsDialog(
-    configured: Boolean,
     currentMode: AiModelMode,
+    access: GiftAccessState,
     onDismiss: () -> Unit,
-    onSave: (String, AiModelMode) -> Unit,
-    onClear: () -> Unit,
+    onSave: (AiModelMode) -> Unit,
+    onRefreshUsage: () -> Unit,
     onDataManagement: () -> Unit,
 ) {
-    var key by remember { mutableStateOf("") }
     var mode by remember(currentMode) { mutableStateOf(currentMode) }
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -87,18 +86,20 @@ internal fun AiSettingsDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    "API 키는 소스나 APK 상수에 포함되지 않으며 Android Keystore로 이 기기 안에 암호화됩니다. 배포용 앱은 서버 프록시 사용을 권장합니다.",
+                    "AI 연결은 Cloudflare Worker를 통해 처리되며 API 키는 이 앱에 저장되지 않습니다.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                OutlinedTextField(
-                    value = key,
-                    onValueChange = { key = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text(if (configured) "새 API 키 (변경할 때만 입력)" else "OpenAI API 키") },
-                    visualTransformation = PasswordVisualTransformation(),
-                    singleLine = true,
-                )
+                OutlinedCard(Modifier.fillMaxWidth()) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("이번 달 AI 사용량", style = MaterialTheme.typography.titleSmall)
+                        Text("예상 사용 ${access.usedKrw}원 · 남음 약 ${access.remainingKrw}원")
+                        Text("월 한도 3,000원 · 활성화 기기 ${access.deviceCount}/${access.maxDevices}대", style = MaterialTheme.typography.bodySmall)
+                        if (access.nextReset.isNotBlank()) Text("다음 초기화 ${access.nextReset}", style = MaterialTheme.typography.bodySmall)
+                        if (access.usedKrw >= 2_400) Text("이번 달 AI 사용 가능 금액이 얼마 남지 않았습니다.", color = MaterialTheme.colorScheme.error)
+                        TextButton(onClick = onRefreshUsage, enabled = !access.loading) { Text("사용량 새로고침") }
+                    }
+                }
                 Text("AI 모델", style = MaterialTheme.typography.titleSmall)
                 AiModelMode.entries.forEach { option ->
                     Row(
@@ -113,9 +114,9 @@ internal fun AiSettingsDialog(
                     }
                 }
                 Text(
-                    if (configured) "연결 정보가 설정되어 있습니다." else "키가 없어도 RGB/HEX 추출과 로컬 색상 후보는 작동합니다.",
+                    "활성화 완료 · API 키 입력이나 교체는 필요하지 않습니다.",
                     style = MaterialTheme.typography.labelMedium,
-                    color = if (configured) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = MaterialTheme.colorScheme.primary,
                 )
                 OutlinedButton(
                     onClick = { onDismiss(); onDataManagement() },
@@ -124,13 +125,10 @@ internal fun AiSettingsDialog(
             }
         },
         confirmButton = {
-            Button(onClick = { onSave(key, mode); onDismiss() }) { Text("저장") }
+            Button(onClick = { onSave(mode); onDismiss() }) { Text("저장") }
         },
         dismissButton = {
-            Row {
-                if (configured) TextButton(onClick = { onClear(); onDismiss() }) { Text("키 삭제", color = MaterialTheme.colorScheme.error) }
-                TextButton(onClick = onDismiss) { Text("닫기") }
-            }
+            TextButton(onClick = onDismiss) { Text("닫기") }
         },
     )
 }
@@ -766,7 +764,11 @@ private fun WideProjectDetail(
                 Button(onClick = { viewModel.clearOriginalColorMatch(); showOriginalColorMatch = true }) { Text("AI 조색") }
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
-                SectionTitle("부품 비교", if (project.projectType == ProjectType.MECHANIC) "누락 의심 확인" else "교체 파츠 비교")
+                SectionTitle("부품 비교", when (project.projectType) {
+                    ProjectType.MILITARY -> "차체·장비 비교"
+                    ProjectType.AUTO -> "차체·휠·내장 비교"
+                    else -> "누락 의심 확인"
+                })
                 Button(onClick = { viewModel.clearPartsComparison(); showPartsComparison = true }) { Text("비교") }
             }
             comparisons.take(2).forEach { PartsComparisonCard(it) }

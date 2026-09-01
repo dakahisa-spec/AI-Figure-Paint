@@ -2,25 +2,9 @@ package com.aifigurepaint.app.ai
 
 import android.content.Context
 import android.graphics.Color
-import android.security.keystore.KeyGenParameterSpec
-import android.security.keystore.KeyProperties
-import android.util.Base64
 import com.aifigurepaint.app.data.PaintEntity
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.SocketTimeoutException
-import java.net.URL
-import java.nio.charset.StandardCharsets
-import java.security.KeyStore
-import javax.crypto.Cipher
-import javax.crypto.KeyGenerator
-import javax.crypto.SecretKey
-import javax.crypto.spec.GCMParameterSpec
-import kotlin.coroutines.coroutineContext
 import kotlin.math.pow
 import kotlin.math.sqrt
 
@@ -147,7 +131,7 @@ interface AiService {
 }
 
 class OpenAiService(
-    private val apiKey: String,
+    private val worker: GiftWorkerClient,
     private val selection: AiModelSelection,
 ) : AiService {
     private val model: String = selection.modelId
@@ -173,7 +157,7 @@ class OpenAiService(
             .put("store", false)
             .put(
                 "instructions",
-                "당신은 피규어 도색 조색 보조자입니다. 목록에 있는 도료만 사용해 2~5개 성분을 고르고 percent 합계를 100으로 맞추세요. 실제 안료 특성은 완벽히 시뮬레이션할 수 없으므로 짧고 보수적으로 설명하세요. 기존 레시피나 DB를 변경하지 말고 제안만 반환하세요.",
+                "당신은 메카닉·밀리터리·오토 모형 도색 조색 보조자입니다. 목록에 있는 도료만 사용해 2~5개 성분을 고르고 percent 합계를 100으로 맞추세요. 실제 안료 특성은 완벽히 시뮬레이션할 수 없으므로 짧고 보수적으로 설명하세요. 기존 레시피나 DB를 변경하지 말고 제안만 반환하세요.",
             )
             .put("input", input)
             .put(
@@ -249,7 +233,7 @@ class OpenAiService(
             .put("store", false)
             .put(
                 "instructions",
-                "피규어 도색 작업을 돕는 전문 어시스턴트입니다. 프로젝트 정보에 근거해 한국어로 4문장 이내로 답하고, 불확실한 도료/희석/압력은 테스트 피스를 권하세요. DB를 직접 변경한다고 표현하지 마세요.",
+                "메카닉·밀리터리·오토 모형 도색 작업을 돕는 전문 어시스턴트입니다. 프로젝트 정보에 근거해 한국어로 4문장 이내로 답하고, 불확실한 도료/희석/압력은 테스트 피스를 권하세요. DB를 직접 변경한다고 표현하지 마세요.",
             )
             .put("input", "프로젝트 정보:\n$context\n\n질문: $question")
         return extractOutputText(post(body)).trim()
@@ -264,7 +248,7 @@ class OpenAiService(
                     .put(
                         "text",
                         """
-                        첨부된 모든 이미지는 동일한 피규어·모형용 도료 한 병을 서로 다른 각도에서 촬영한 사진입니다.
+                        첨부된 모든 이미지는 동일한 모형용 도료 한 병을 서로 다른 각도에서 촬영한 사진입니다.
                         각 이미지의 정보를 서로 보완해 가장 신뢰도 높은 하나의 제품 정보를 작성하세요.
                         사진에 실제로 보이는 정보만 근거로 브랜드, 시리즈, 제품 코드, 제품명과 한글 제품명을 판독하세요.
                         이미지 사이 정보가 충돌하거나 흐려서 확정할 수 없으면 임의로 선택하지 말고 해당 필드는 빈 문자열로 두며 notes에 가능한 값과 확인 필요 사항을 적으세요.
@@ -361,7 +345,7 @@ class OpenAiService(
                     .put(
                         "text",
                         """
-                        첨부된 모든 이미지는 동일한 피규어·프라모델·레진킷 도색 프로젝트를 서로 다른 각도에서 촬영한 사진입니다.
+                        첨부된 모든 이미지는 동일한 메카닉·밀리터리·오토 모형 프로젝트를 서로 다른 각도에서 촬영한 사진입니다.
                         각 이미지의 박스명, 키트명, 캐릭터명, 모델명과 작업 진행 상태 정보를 서로 보완해 하나의 검토용 초안을 만드세요.
                         이미지 사이 정보가 충돌하거나 서로 다른 대상으로 보이면 임의로 합치지 말고 notes에 사용자 확인이 필요하다고 적으세요.
                         project_name은 사용자가 목록에서 알아보기 쉬운 짧은 프로젝트 이름, model_name은 식별 가능한 공식 모델·키트명입니다.
@@ -608,7 +592,7 @@ class OpenAiService(
             인터넷 검색, 공식자료 검색, 캐릭터·기체 이름 식별을 하지 마세요. 첨부된 ${imageDataUrls.size}장의 사진만 한 번에 종합 분석하세요.
             모든 사진은 같은 대상을 여러 각도에서 촬영한 것으로 간주하되 서로 다른 대상으로 보이면 characteristics에 사용자 확인 필요를 표시하세요.
             사진 사이의 색온도, 조명, 그림자, 하이라이트, 화이트밸런스, 배경 반사를 비교해 공통으로 확인되는 도장색을 추정하세요. 전체 평균색을 그대로 기준으로 삼지 마세요.
-            실제 사진에서 확실히 보이는 주요 도색 부위만 최대 8개로 분리하세요. Mechanic은 외장 메인/서브·프레임·무장·버니어·센서·포인트 색상, Figure는 피부/그림자·머리/그림자·의상·장식·무기/소품을 우선하되 보이지 않는 부위는 만들지 마세요.
+            실제 사진에서 확실히 보이는 주요 도색 부위만 최대 8개로 분리하세요. Mechanic은 외장 메인/서브·프레임·무장·버니어·센서·포인트 색상, Military는 차체 기본색·위장색·궤도·바퀴·고무·무장·금속·배기구·장비, Auto는 외장 바디·실내·대시보드·시트·섀시·엔진·휠·브레이크·몰딩·램프를 우선하되 보이지 않는 부위는 만들지 마세요.
             color_family에는 색 계열을, characteristics에는 명도·채도와 조명 영향 여부를 적으세요.
             결과는 사진 기준 예상 조색이며 disclaimer에는 조명, 카메라 화이트밸런스, 화면 보정, 배경색, 도료 안료, 바탕색, 희석비와 도막 두께에 따른 차이를 안내하세요.
         """.trimIndent()
@@ -772,7 +756,7 @@ class OpenAiService(
             .put(
                 "instructions",
                 """
-                피규어·모형용 도료의 공식 제품 코드/상품번호를 인터넷에서 조사합니다.
+                모형용 도료의 공식 제품 코드/상품번호를 인터넷에서 조사합니다.
                 제조사 공식 홈페이지와 공식 카탈로그/PDF를 최우선으로 하고, 다음으로 공식 유통사·공식 판매처·신뢰할 수 있는 전문 도료 판매점을 사용하세요.
                 가능하면 서로 독립된 자료 2개를 교차 확인하세요. 블로그나 커뮤니티 글 하나만으로 확정하지 마세요.
                 입력된 도료마다 paint_id를 그대로 반환하고 후보는 최대 3개만 제시하세요. 공식 번호를 확인하지 못하면 candidates를 빈 배열로 두고 note에 '확인할 수 없음'을 적으세요.
@@ -847,34 +831,8 @@ class OpenAiService(
         return paints.map { paint -> results.firstOrNull { it.paintId == paint.id } ?: AiProductCodeResult(paint.id, emptyList(), "확인할 수 없음") }
     }
 
-    private suspend fun post(body: JSONObject, readTimeoutMs: Int = 60_000): JSONObject = withContext(Dispatchers.IO) {
-        val connection = (URL("https://api.openai.com/v1/responses").openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            connectTimeout = 20_000
-            readTimeout = readTimeoutMs
-            doOutput = true
-            setRequestProperty("Authorization", "Bearer $apiKey")
-            setRequestProperty("Content-Type", "application/json")
-        }
-        try {
-            connection.outputStream.use { it.write(body.toString().toByteArray(StandardCharsets.UTF_8)) }
-            coroutineContext.ensureActive()
-            val code = connection.responseCode
-            val stream = if (code in 200..299) connection.inputStream else connection.errorStream
-            val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
-            coroutineContext.ensureActive()
-            if (code !in 200..299) {
-                val apiMessage = runCatching { JSONObject(text).getJSONObject("error").optString("message") }.getOrNull()
-                if (code == 408 || code == 504 || apiMessage.orEmpty().contains("timeout", ignoreCase = true)) {
-                    throw SocketTimeoutException(apiMessage?.take(180) ?: "AI response timeout")
-                }
-                error(apiMessage?.take(180) ?: "AI 연결 오류 ($code)")
-            }
-            JSONObject(text)
-        } finally {
-            connection.disconnect()
-        }
-    }
+    private suspend fun post(body: JSONObject, readTimeoutMs: Int = 60_000): JSONObject =
+        worker.postResponses(body, readTimeoutMs)
 
     private fun extractOutputText(response: JSONObject): String {
         response.optString("output_text").takeIf { it.isNotBlank() }?.let { return it }
@@ -942,56 +900,13 @@ object LocalColorEngine {
 class AiSettingsStore(context: Context) {
     private val prefs = context.getSharedPreferences("ai_provider_settings", Context.MODE_PRIVATE)
 
-    fun hasApiKey(): Boolean = prefs.contains(KEY_VALUE)
     fun mode(): AiModelMode = AiModelMode.fromStored(prefs.getString(KEY_MODEL_MODE, null))
     fun selection(taskType: AiTaskType, highestQuality: Boolean = false): AiModelSelection =
         AiModelRouter.resolve(taskType, mode(), highestQuality)
-    fun maskedKey(): String = if (hasApiKey()) "••••••••${readApiKey().takeLast(4)}" else "미설정"
-
-    fun save(apiKey: String, mode: AiModelMode) {
-        if (apiKey.isNotBlank()) prefs.edit().putString(KEY_VALUE, encrypt(apiKey.trim())).apply()
-        prefs.edit().putString(KEY_MODEL_MODE, mode.name).apply()
-    }
 
     fun saveMode(mode: AiModelMode) = prefs.edit().putString(KEY_MODEL_MODE, mode.name).apply()
 
-    fun clear() = prefs.edit().remove(KEY_VALUE).apply()
-    fun readApiKey(): String = prefs.getString(KEY_VALUE, null)?.let(::decrypt).orEmpty()
-
-    private fun key(): SecretKey {
-        val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        (store.getKey(KEY_ALIAS, null) as? SecretKey)?.let { return it }
-        val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
-        generator.init(
-            KeyGenParameterSpec.Builder(
-                KEY_ALIAS,
-                KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
-            ).setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                .build(),
-        )
-        return generator.generateKey()
-    }
-
-    private fun encrypt(value: String): String {
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, key())
-        val combined = cipher.iv + cipher.doFinal(value.toByteArray(StandardCharsets.UTF_8))
-        return Base64.encodeToString(combined, Base64.NO_WRAP)
-    }
-
-    private fun decrypt(value: String): String = runCatching {
-        val combined = Base64.decode(value, Base64.NO_WRAP)
-        val iv = combined.copyOfRange(0, 12)
-        val encrypted = combined.copyOfRange(12, combined.size)
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, iv))
-        String(cipher.doFinal(encrypted), StandardCharsets.UTF_8)
-    }.getOrDefault("")
-
     companion object {
-        private const val KEY_ALIAS = "ai_figure_paint_api_key"
-        private const val KEY_VALUE = "encrypted_api_key"
         private const val KEY_MODEL_MODE = "model_mode"
     }
 }

@@ -22,6 +22,8 @@ import com.aifigurepaint.app.ai.AiPartsComparisonDraft
 import com.aifigurepaint.app.ai.AiProjectDraft
 import com.aifigurepaint.app.ai.AiProductCodeResult
 import com.aifigurepaint.app.ai.AiSettingsStore
+import com.aifigurepaint.app.ai.GiftAccessState
+import com.aifigurepaint.app.ai.GiftWorkerClient
 import com.aifigurepaint.app.ai.LocalColorEngine
 import com.aifigurepaint.app.ai.OpenAiService
 import com.aifigurepaint.app.data.AppDatabase
@@ -135,6 +137,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val testResultsDao = db.testResultDao()
     private val excel = ExcelBackupService(application, db)
     private val aiSettings = AiSettingsStore(application)
+    private val giftWorker = GiftWorkerClient(application)
     private var aiJob: Job? = null
     private data class PreparedOriginalColorPhoto(val dataUrl: String, val sampledColors: List<Int>)
     private data class PreparedOriginalColorPhotos(val dataUrls: List<String>, val failedCount: Int, val sampledColors: List<Int>)
@@ -154,8 +157,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val paintScanState = _paintScanState.asStateFlow()
     private val _projectScanState = MutableStateFlow(ProjectScanUiState())
     val projectScanState = _projectScanState.asStateFlow()
-    private val _aiConfigured = MutableStateFlow(aiSettings.hasApiKey())
+    private val _aiConfigured = MutableStateFlow(giftWorker.isActivated())
     val aiConfigured = _aiConfigured.asStateFlow()
+    private val _giftAccess = MutableStateFlow(GiftAccessState(activated = giftWorker.isActivated()))
+    val giftAccess = _giftAccess.asStateFlow()
     private val _aiModelMode = MutableStateFlow(aiSettings.mode())
     val aiModelMode = _aiModelMode.asStateFlow()
     private val _testAdjustmentState = MutableStateFlow(TestAdjustmentUiState())
@@ -168,6 +173,35 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val productCodeSearchState = _productCodeSearchState.asStateFlow()
     private val _originalColorMatchState = MutableStateFlow(OriginalColorMatchUiState())
     val originalColorMatchState = _originalColorMatchState.asStateFlow()
+
+    init {
+        if (giftWorker.isActivated()) refreshGiftUsage()
+    }
+
+    fun activateGift(code: String) {
+        viewModelScope.launch {
+            _giftAccess.value = _giftAccess.value.copy(loading = true, notice = null)
+            runCatching { giftWorker.activate(code) }
+                .onSuccess {
+                    _giftAccess.value = it
+                    _aiConfigured.value = true
+                    _message.value = "선물용 앱 활성화를 완료했습니다."
+                }
+                .onFailure { error ->
+                    _giftAccess.value = GiftAccessState(notice = error.message ?: "활성화하지 못했습니다.")
+                }
+        }
+    }
+
+    fun refreshGiftUsage() {
+        viewModelScope.launch {
+            if (!giftWorker.isActivated()) return@launch
+            _giftAccess.value = _giftAccess.value.copy(loading = true, notice = null)
+            runCatching { giftWorker.usage() }
+                .onSuccess { _giftAccess.value = it }
+                .onFailure { error -> _giftAccess.value = _giftAccess.value.copy(loading = false, notice = error.message) }
+        }
+    }
 
     fun clearMessage() { _message.value = null }
     fun clearAiResult() { _aiState.value = AiUiState() }
@@ -198,16 +232,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         aiJob = viewModelScope.launch {
             val selection = aiSettings.selection(AiTaskType.PRODUCT_CODE_SEARCH)
             _productCodeSearchState.value = ProductCodeSearchUiState(loading = true, activeModelLabel = selection.resultLabel)
-            val apiKey = aiSettings.readApiKey()
-            if (apiKey.isBlank()) {
+            if (!giftWorker.isActivated()) {
                 _productCodeSearchState.value = ProductCodeSearchUiState(
-                    notice = "AI 연결을 사용할 수 없습니다. 설정에서 API 키를 등록해주세요.",
+                    notice = "AI 연결을 사용할 수 없습니다. 선물용 활성화 상태를 확인해주세요.",
                     activeModelLabel = selection.resultLabel,
                 )
                 return@launch
             }
             try {
-                val results = OpenAiService(apiKey, selection).searchProductCodes(targets)
+                val results = OpenAiService(giftWorker, selection).searchProductCodes(targets)
                 _productCodeSearchState.value = ProductCodeSearchUiState(results = results, activeModelLabel = selection.resultLabel)
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -368,10 +401,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 stage = "PHOTO_PLAN",
                 activeModelLabel = selection.resultLabel,
             )
-            val apiKey = aiSettings.readApiKey()
-            if (apiKey.isBlank()) {
+            if (!giftWorker.isActivated()) {
                 _originalColorMatchState.value = OriginalColorMatchUiState(
-                    notice = "AI 연결을 사용할 수 없습니다. 기존 설정에서 API 키를 확인해주세요.",
+                    notice = "AI 연결을 사용할 수 없습니다. 선물용 활성화 상태를 확인해주세요.",
                     activeModelLabel = selection.resultLabel,
                 )
                 return@launch
@@ -381,7 +413,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val available = paints.value.filter { !ownedOnly || it.owned }
                 require(available.isNotEmpty()) { "조건에 맞는 도료가 없습니다." }
                 val candidates = selectPhotoPaintCandidates(available, prepared.sampledColors)
-                val aiPlan = OpenAiService(apiKey, selection).analyzePhotoColors(
+                val aiPlan = OpenAiService(giftWorker, selection).analyzePhotoColors(
                     imageDataUrls = prepared.dataUrls,
                     projectType = project.projectType,
                     projectName = project.name,
@@ -469,10 +501,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         aiJob = viewModelScope.launch {
             val selection = aiSettings.selection(AiTaskType.PARTS_COMPARE)
             _partsComparisonState.value = PartsComparisonUiState(loading = true, activeModelLabel = selection.resultLabel)
-            val apiKey = aiSettings.readApiKey()
-            if (apiKey.isBlank()) {
+            if (!giftWorker.isActivated()) {
                 _partsComparisonState.value = PartsComparisonUiState(
-                    notice = "AI 연결을 사용할 수 없습니다. 설정에서 API 키를 등록해주세요.",
+                    notice = "AI 연결을 사용할 수 없습니다. 선물용 활성화 상태를 확인해주세요.",
                     activeModelLabel = selection.resultLabel,
                 )
                 return@launch
@@ -480,7 +511,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val baseline = preparePaintPhoto(Uri.parse(baselineUri))
                 val current = preparePaintPhoto(Uri.parse(currentUri))
-                val draft = OpenAiService(apiKey, selection).compareParts(baseline.dataUrl, current.dataUrl)
+                val draft = OpenAiService(giftWorker, selection).compareParts(baseline.dataUrl, current.dataUrl)
                 _partsComparisonState.value = PartsComparisonUiState(draft = draft, activeModelLabel = selection.resultLabel)
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -594,13 +625,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 targetHex = "#%06X".format(recipe.resultColorValue and 0xFFFFFF),
             )
             try {
-                val key = aiSettings.readApiKey()
-                val suggestion = if (key.isBlank()) withContext(Dispatchers.Default) { LocalColorEngine.suggest(request) }
-                else OpenAiService(key, aiSettings.selection(AiTaskType.TEST_PIECE_ADJUST)).suggestMix(request)
+                val activated = giftWorker.isActivated()
+                val suggestion = if (!activated) withContext(Dispatchers.Default) { LocalColorEngine.suggest(request) }
+                else OpenAiService(giftWorker, aiSettings.selection(AiTaskType.TEST_PIECE_ADJUST)).suggestMix(request)
                 _testAdjustmentState.value = TestAdjustmentUiState(
                     testResultId = result.id,
                     suggestion = suggestion,
-                    notice = if (key.isBlank()) "AI 연결을 사용할 수 없어 로컬 후보를 표시합니다." else null,
+                    notice = if (!activated) "AI 연결을 사용할 수 없어 로컬 후보를 표시합니다." else null,
                 )
             } catch (_: CancellationException) {
                 throw CancellationException()
@@ -736,13 +767,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun saveAiSettings(apiKey: String, mode: AiModelMode) {
-        aiSettings.save(apiKey, mode)
-        _aiConfigured.value = aiSettings.hasApiKey()
-        _aiModelMode.value = aiSettings.mode()
-        _message.value = "AI 연결 설정을 안전하게 저장했습니다."
-    }
-
     fun saveAiModelMode(mode: AiModelMode) {
         aiSettings.saveMode(mode)
         _aiModelMode.value = aiSettings.mode()
@@ -754,12 +778,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun aiModelLabel(taskType: AiTaskType, highestQuality: Boolean = false): String =
         aiSettings.selection(taskType, highestQuality).resultLabel
-
-    fun clearAiSettings() {
-        aiSettings.clear()
-        _aiConfigured.value = false
-        _message.value = "저장된 AI API 키를 삭제했습니다."
-    }
 
     fun analyzePaintPhotos(uris: List<Uri>) {
         require(uris.size in 1..3) { "도료 사진은 1장 이상 3장 이하로 선택해주세요." }
@@ -780,14 +798,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     notes = "선택한 ${prepared.size}장 사진에서 로컬로 추출한 대표색입니다. 제품 정보는 사진을 보며 직접 확인해주세요.",
                 )
                 fallbackDraft = localDraft
-                val apiKey = aiSettings.readApiKey()
-                if (apiKey.isBlank()) {
+                if (!giftWorker.isActivated()) {
                     _paintScanState.value = PaintScanUiState(
                         draft = localDraft,
                         notice = "GPT-5.6 연결 설정이 없어 로컬 대표색만 추출했습니다.",
                     )
                 } else {
-                    val result = OpenAiService(apiKey, aiSettings.selection(AiTaskType.PAINT_SCAN))
+                    val result = OpenAiService(giftWorker, aiSettings.selection(AiTaskType.PAINT_SCAN))
                         .analyzePaintPhotos(prepared.map { it.dataUrl })
                     _paintScanState.value = PaintScanUiState(draft = result)
                 }
@@ -826,14 +843,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     runCatching { preparePaintPhoto(uri) }.getOrNull()
                 }
                 require(prepared.isNotEmpty()) { "선택한 사진을 불러올 수 없습니다." }
-                val apiKey = aiSettings.readApiKey()
-                if (apiKey.isBlank()) {
+                if (!giftWorker.isActivated()) {
                     _projectScanState.value = ProjectScanUiState(
                         draft = manualDraft,
                         notice = "GPT-5.6 연결 설정이 없어 촬영일만 입력했습니다. 나머지 정보는 직접 확인해주세요.",
                     )
                 } else {
-                    val result = OpenAiService(apiKey, aiSettings.selection(AiTaskType.SIMPLE_CHAT))
+                    val result = OpenAiService(giftWorker, aiSettings.selection(AiTaskType.SIMPLE_CHAT))
                         .analyzeProjectPhotos(prepared.map { it.dataUrl }, captureDate)
                     _projectScanState.value = ProjectScanUiState(
                         draft = result,
@@ -890,15 +906,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 targetHex = targetHex,
             )
             try {
-                val apiKey = aiSettings.readApiKey()
-                if (apiKey.isBlank()) {
+                if (!giftWorker.isActivated()) {
                     val local = withContext(Dispatchers.Default) { LocalColorEngine.suggest(request) }
                     _aiState.value = AiUiState(
                         suggestion = local,
                         notice = "AI 연결을 사용할 수 없습니다. 로컬 색상 분석 결과를 표시합니다.",
                     )
                 } else {
-                    val result = OpenAiService(apiKey, selection).suggestMix(request)
+                    val result = OpenAiService(giftWorker, selection).suggestMix(request)
                     _aiState.value = AiUiState(suggestion = result, activeModelLabel = selection.resultLabel)
                 }
             } catch (_: CancellationException) {
@@ -922,13 +937,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val taskType = if (question.trim() in simpleQuestions) AiTaskType.SIMPLE_CHAT else AiTaskType.PAINTING_ADVICE
             val selection = aiSettings.selection(taskType, requestsHighestQuality(question))
             _aiState.value = AiUiState(loading = true, activeModelLabel = selection.resultLabel)
-            val apiKey = aiSettings.readApiKey()
-            if (apiKey.isBlank()) {
-                _aiState.value = AiUiState(notice = "AI 연결을 사용할 수 없습니다. 설정에서 API 키를 등록해주세요.")
+            if (!giftWorker.isActivated()) {
+                _aiState.value = AiUiState(notice = "AI 연결을 사용할 수 없습니다. 선물용 활성화 상태를 확인해주세요.")
                 return@launch
             }
             try {
-                val advice = OpenAiService(apiKey, selection).advise(question, context)
+                val advice = OpenAiService(giftWorker, selection).advise(question, context)
                 _aiState.value = AiUiState(advice = advice, activeModelLabel = selection.resultLabel)
             } catch (_: CancellationException) {
                 throw CancellationException()

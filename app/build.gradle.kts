@@ -10,11 +10,13 @@ android {
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.aifigurepaint.app"
+        applicationId = "com.aifigurepaint.app.gift"
         minSdk = 26
         targetSdk = 34
-        versionCode = 21
-        versionName = "0.7.9"
+        versionCode = 1
+        versionName = "1.0.0-gift"
+        val giftWorkerUrl = providers.gradleProperty("GIFT_WORKER_URL").orElse("https://configure-worker.invalid").get()
+        buildConfigField("String", "GIFT_WORKER_URL", "\"$giftWorkerUrl\"")
     }
 
     buildFeatures {

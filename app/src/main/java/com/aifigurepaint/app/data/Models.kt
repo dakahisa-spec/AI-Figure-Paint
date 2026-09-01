@@ -32,7 +32,7 @@ data class ProjectEntity(
     val memo: String = "",
     @ColumnInfo(defaultValue = "0") val startDate: Long = 0,
     @ColumnInfo(defaultValue = "'PLANNED'") val status: String = ProjectStatus.PLANNED,
-    @ColumnInfo(defaultValue = "'FIGURE'") val projectType: String = ProjectType.FIGURE,
+    @ColumnInfo(defaultValue = "'MECHANIC'") val projectType: String = ProjectType.MECHANIC,
     val photoUri: String? = null,
     val partsBaselinePhotoUri: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
@@ -343,10 +343,21 @@ object ProjectStatus {
 object ProjectType {
     const val FIGURE = "FIGURE"
     const val MECHANIC = "MECHANIC"
-    val entries = listOf(FIGURE, MECHANIC)
+    const val MILITARY = "MILITARY"
+    const val AUTO = "AUTO"
+    val entries = listOf(MECHANIC, MILITARY, AUTO)
 
-    fun label(value: String): String = if (value == MECHANIC) "메카닉" else "피규어"
-    fun badge(value: String): String = if (value == MECHANIC) "Mechanic" else "Figure"
+    fun label(value: String): String = when (value) {
+        MILITARY -> "밀리터리"
+        AUTO -> "오토"
+        else -> "메카닉"
+    }
+
+    fun badge(value: String): String = when (value) {
+        MILITARY -> "Military"
+        AUTO -> "Auto"
+        else -> "Mechanic"
+    }
 }
 
 object PhotoOwner {

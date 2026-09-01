@@ -1,0 +1,11 @@
+name = "ai-figure-paint-gift"
+main = "src/index.ts"
+compatibility_date = "2026-08-28"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "ai-figure-paint-gift"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
+[vars]
+OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"

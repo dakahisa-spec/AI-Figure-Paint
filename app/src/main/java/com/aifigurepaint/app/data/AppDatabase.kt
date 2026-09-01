@@ -286,32 +286,9 @@ abstract class AppDatabase : RoomDatabase() {
             instance ?: Room.databaseBuilder(
                 context.applicationContext,
                 AppDatabase::class.java,
-                "ai_figure_paint.db",
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6).addCallback(object : Callback() {
-                override fun onCreate(db: SupportSQLiteDatabase) {
-                    super.onCreate(db)
-                    val now = System.currentTimeMillis()
-                    SeedData.paints.forEach { paint ->
-                        db.execSQL(
-                            """
-                            INSERT INTO paints
-                            (brand, series, productCode, name, koreanName, colorValue, owned, memo, createdAt, updatedAt)
-                            VALUES (?, ?, ?, ?, ?, ?, 1, '', ?, ?)
-                            """.trimIndent(),
-                            arrayOf(
-                                paint.brand,
-                                paint.series,
-                                paint.productCode,
-                                paint.name,
-                                paint.koreanName,
-                                paint.colorValue,
-                                now,
-                                now,
-                            ),
-                        )
-                    }
-                }
-            }).build().also { instance = it }
+                "ai_figure_paint_gift.db",
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                .build().also { instance = it }
         }
 
         private val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -442,7 +419,7 @@ abstract class AppDatabase : RoomDatabase() {
 
         private val MIGRATION_4_5 = object : Migration(4, 5) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("ALTER TABLE projects ADD COLUMN projectType TEXT NOT NULL DEFAULT 'FIGURE'")
+                db.execSQL("ALTER TABLE projects ADD COLUMN projectType TEXT NOT NULL DEFAULT 'MECHANIC'")
                 db.execSQL("ALTER TABLE projects ADD COLUMN partsBaselinePhotoUri TEXT")
                 db.execSQL(
                     """

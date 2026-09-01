@@ -72,12 +72,17 @@ fun AiFigurePaintApp(viewModel: AppViewModel) {
     val recipes by viewModel.recipes.collectAsState()
     val recipeCards by viewModel.recipeCards.collectAsState()
     val message by viewModel.message.collectAsState()
-    val aiConfigured by viewModel.aiConfigured.collectAsState()
     val aiModelMode by viewModel.aiModelMode.collectAsState()
+    val giftAccess by viewModel.giftAccess.collectAsState()
     val snackbarHost = remember { SnackbarHostState() }
     var tab by remember { mutableStateOf(RootTab.HOME) }
     var detail by remember { mutableStateOf<DetailPage?>(null) }
     var showAiSettings by remember { mutableStateOf(false) }
+
+    if (!giftAccess.activated) {
+        GiftActivationScreen(state = giftAccess, onActivate = viewModel::activateGift)
+        return
+    }
 
     LaunchedEffect(message) {
         message?.let {
@@ -266,11 +271,11 @@ fun AiFigurePaintApp(viewModel: AppViewModel) {
     }
     if (showAiSettings) {
         AiSettingsDialog(
-            configured = aiConfigured,
             currentMode = aiModelMode,
+            access = giftAccess,
             onDismiss = { showAiSettings = false },
-            onSave = viewModel::saveAiSettings,
-            onClear = viewModel::clearAiSettings,
+            onSave = viewModel::saveAiModelMode,
+            onRefreshUsage = viewModel::refreshGiftUsage,
             onDataManagement = { detail = DetailPage.DataManagement },
         )
     }
@@ -375,7 +380,7 @@ private fun HomeHero(
                 Text("☰", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.size(12.dp))
                 Column(Modifier.weight(1f)) {
-                    Text("AI Figure Paint", style = MaterialTheme.typography.titleLarge, color = StudioNavy)
+                    Text("AI Figure Paint Gift", style = MaterialTheme.typography.titleLarge, color = StudioNavy)
                     Text("PAINT STUDIO · v${com.aifigurepaint.app.BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 TextButton(onClick = onSearch) { Text("⌕ 검색", color = StudioNavy) }
@@ -430,7 +435,7 @@ private fun HomeWelcomeCard(modifier: Modifier = Modifier) {
             }
             Spacer(Modifier.size(11.dp))
             Column {
-                Text("안녕하세요, 피규어 도색을", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("안녕하세요, 모형 도색을", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text("더 스마트하게 관리해보세요.", style = MaterialTheme.typography.titleMedium, color = StudioNavy)
             }
         }
