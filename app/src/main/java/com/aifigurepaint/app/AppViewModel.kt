@@ -12,6 +12,8 @@ import androidx.room.withTransaction
 import com.aifigurepaint.app.ai.AiMixRequest
 import com.aifigurepaint.app.ai.AiMixComponent
 import com.aifigurepaint.app.ai.AiMixSuggestion
+import com.aifigurepaint.app.ai.AiBudgetSnapshot
+import com.aifigurepaint.app.ai.AiMonthlyBudgetStore
 import com.aifigurepaint.app.ai.AiModelMode
 import com.aifigurepaint.app.ai.AiTaskType
 import com.aifigurepaint.app.ai.AiPaintDraft
@@ -135,6 +137,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val testResultsDao = db.testResultDao()
     private val excel = ExcelBackupService(application, db)
     private val aiSettings = AiSettingsStore(application)
+    private val aiBudgetStore = AiMonthlyBudgetStore(application)
     private var aiJob: Job? = null
     private data class PreparedOriginalColorPhoto(val dataUrl: String, val sampledColors: List<Int>)
     private data class PreparedOriginalColorPhotos(val dataUrls: List<String>, val failedCount: Int, val sampledColors: List<Int>)
@@ -147,6 +150,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _message = MutableStateFlow<String?>(null)
     val message = _message.asStateFlow()
+    private val _aiBudget = MutableStateFlow(aiBudgetStore.snapshot())
+    val aiBudget = _aiBudget.asStateFlow()
 
     private val _aiState = MutableStateFlow(AiUiState())
     val aiState = _aiState.asStateFlow()
@@ -168,6 +173,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val productCodeSearchState = _productCodeSearchState.asStateFlow()
     private val _originalColorMatchState = MutableStateFlow(OriginalColorMatchUiState())
     val originalColorMatchState = _originalColorMatchState.asStateFlow()
+
+    private fun openAiService(apiKey: String, selection: com.aifigurepaint.app.ai.AiModelSelection): OpenAiService =
+        OpenAiService(apiKey, selection, aiBudgetStore, ::handleBudgetUpdated)
+
+    private fun handleBudgetUpdated(snapshot: AiBudgetSnapshot) {
+        _aiBudget.value = snapshot
+        snapshot.warningMessage?.let { _message.value = it }
+    }
 
     fun clearMessage() { _message.value = null }
     fun clearAiResult() { _aiState.value = AiUiState() }
@@ -207,7 +220,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 return@launch
             }
             try {
-                val results = OpenAiService(apiKey, selection).searchProductCodes(targets)
+                val results = openAiService(apiKey, selection).searchProductCodes(targets)
                 _productCodeSearchState.value = ProductCodeSearchUiState(results = results, activeModelLabel = selection.resultLabel)
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -381,7 +394,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val available = paints.value.filter { !ownedOnly || it.owned }
                 require(available.isNotEmpty()) { "조건에 맞는 도료가 없습니다." }
                 val candidates = selectPhotoPaintCandidates(available, prepared.sampledColors)
-                val aiPlan = OpenAiService(apiKey, selection).analyzePhotoColors(
+                val aiPlan = openAiService(apiKey, selection).analyzePhotoColors(
                     imageDataUrls = prepared.dataUrls,
                     projectType = project.projectType,
                     projectName = project.name,
@@ -413,7 +426,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     stage = "PHOTO",
                     photoAnalysisTimedOut = timedOut,
                     notice = if (timedOut) {
-                        "AI 사진 조색 시간이 초과되었습니다. 사진은 그대로 유지됩니다. 다시 시도하거나 Terra/Sol 모델을 선택해주세요."
+                        "AI 사진 조색 시간이 초과되었습니다. 사진은 그대로 유지됩니다. 다시 시도하거나 Terra 모델을 선택해주세요."
                     } else {
                         "사진 조색을 완료하지 못했습니다: ${error.message.orEmpty().take(120)}"
                     },
@@ -480,7 +493,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val baseline = preparePaintPhoto(Uri.parse(baselineUri))
                 val current = preparePaintPhoto(Uri.parse(currentUri))
-                val draft = OpenAiService(apiKey, selection).compareParts(baseline.dataUrl, current.dataUrl)
+                val draft = openAiService(apiKey, selection).compareParts(baseline.dataUrl, current.dataUrl)
                 _partsComparisonState.value = PartsComparisonUiState(draft = draft, activeModelLabel = selection.resultLabel)
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -596,7 +609,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val key = aiSettings.readApiKey()
                 val suggestion = if (key.isBlank()) withContext(Dispatchers.Default) { LocalColorEngine.suggest(request) }
-                else OpenAiService(key, aiSettings.selection(AiTaskType.TEST_PIECE_ADJUST)).suggestMix(request)
+                else openAiService(key, aiSettings.selection(AiTaskType.TEST_PIECE_ADJUST)).suggestMix(request)
                 _testAdjustmentState.value = TestAdjustmentUiState(
                     testResultId = result.id,
                     suggestion = suggestion,
@@ -787,7 +800,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         notice = "GPT-5.6 연결 설정이 없어 로컬 대표색만 추출했습니다.",
                     )
                 } else {
-                    val result = OpenAiService(apiKey, aiSettings.selection(AiTaskType.PAINT_SCAN))
+                    val result = openAiService(apiKey, aiSettings.selection(AiTaskType.PAINT_SCAN))
                         .analyzePaintPhotos(prepared.map { it.dataUrl })
                     _paintScanState.value = PaintScanUiState(draft = result)
                 }
@@ -833,7 +846,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         notice = "GPT-5.6 연결 설정이 없어 촬영일만 입력했습니다. 나머지 정보는 직접 확인해주세요.",
                     )
                 } else {
-                    val result = OpenAiService(apiKey, aiSettings.selection(AiTaskType.SIMPLE_CHAT))
+                    val result = openAiService(apiKey, aiSettings.selection(AiTaskType.SIMPLE_CHAT))
                         .analyzeProjectPhotos(prepared.map { it.dataUrl }, captureDate)
                     _projectScanState.value = ProjectScanUiState(
                         draft = result,
@@ -898,7 +911,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         notice = "AI 연결을 사용할 수 없습니다. 로컬 색상 분석 결과를 표시합니다.",
                     )
                 } else {
-                    val result = OpenAiService(apiKey, selection).suggestMix(request)
+                    val result = openAiService(apiKey, selection).suggestMix(request)
                     _aiState.value = AiUiState(suggestion = result, activeModelLabel = selection.resultLabel)
                 }
             } catch (_: CancellationException) {
@@ -928,7 +941,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 return@launch
             }
             try {
-                val advice = OpenAiService(apiKey, selection).advise(question, context)
+                val advice = openAiService(apiKey, selection).advise(question, context)
                 _aiState.value = AiUiState(advice = advice, activeModelLabel = selection.resultLabel)
             } catch (_: CancellationException) {
                 throw CancellationException()

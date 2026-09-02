@@ -9,6 +9,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -16,8 +18,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -45,6 +45,18 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.UUID
+
+/** Android Window Size Class breakpoints, with a Fold inner-screen two-pane threshold. */
+internal enum class AppWindowWidthSizeClass { Compact, Medium, Expanded }
+
+internal fun windowWidthSizeClass(width: Dp): AppWindowWidthSizeClass = when {
+    width < 600.dp -> AppWindowWidthSizeClass.Compact
+    width < 840.dp -> AppWindowWidthSizeClass.Medium
+    else -> AppWindowWidthSizeClass.Expanded
+}
+
+internal fun supportsFoldTwoPane(width: Dp): Boolean =
+    windowWidthSizeClass(width) != AppWindowWidthSizeClass.Compact && width >= 700.dp
 
 @Composable
 fun ColorSwatch(colorValue: Int, size: Dp = 48.dp, round: Boolean = false) {
@@ -92,12 +104,14 @@ fun PhotoPreview(uriText: String?, modifier: Modifier = Modifier) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun PhotoStrip(uris: List<String>, modifier: Modifier = Modifier, itemSize: Dp = 112.dp) {
     if (uris.isEmpty()) return
-    Row(
-        modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+    FlowRow(
+        modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         uris.take(3).forEach { uri -> PhotoPreview(uri, Modifier.size(itemSize)) }
     }

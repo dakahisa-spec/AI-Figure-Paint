@@ -8,12 +8,15 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -64,6 +67,7 @@ import com.aifigurepaint.app.data.ProjectType
 import com.aifigurepaint.app.data.RecipeCardRow
 import java.io.File
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun ProjectListScreen(
     projects: List<ProjectEntity>,
@@ -73,17 +77,16 @@ internal fun ProjectListScreen(
 ) {
     var typeFilter by remember { mutableStateOf<String?>(null) }
     val filteredProjects = projects.filter { typeFilter == null || it.projectType == typeFilter }
-    Column(Modifier.fillMaxSize().padding(horizontal = 14.dp)) {
-        Row(Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("프로젝트", style = MaterialTheme.typography.headlineMedium)
-                Text("도색 작업 ${projects.size}개", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+        Column(Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("프로젝트", style = MaterialTheme.typography.headlineMedium)
+            Text("도색 작업 ${projects.size}개", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onScan, modifier = Modifier.weight(1f).height(48.dp), contentPadding = PaddingValues(horizontal = 10.dp)) { Text("◎ AI 촬영") }
+                Button(onClick = onAdd, modifier = Modifier.weight(1f).height(48.dp), contentPadding = PaddingValues(horizontal = 10.dp)) { Text("＋ 추가") }
             }
-            OutlinedButton(onClick = onScan, modifier = Modifier.height(40.dp), contentPadding = PaddingValues(horizontal = 10.dp)) { Text("◎ AI 촬영") }
-            Spacer(Modifier.size(7.dp))
-            Button(onClick = onAdd, modifier = Modifier.height(40.dp), contentPadding = PaddingValues(horizontal = 10.dp)) { Text("＋ 추가") }
         }
-        Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        FlowRow(Modifier.fillMaxWidth().padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             FilterChip(selected = typeFilter == null, onClick = { typeFilter = null }, label = { Text("전체") })
             ProjectType.entries.forEach { type ->
                 FilterChip(selected = typeFilter == type, onClick = { typeFilter = type }, label = { Text(ProjectType.label(type)) })
@@ -95,7 +98,7 @@ internal fun ProjectListScreen(
             EmptyCard("선택한 타입의 프로젝트가 없습니다.")
         } else {
             BoxWithConstraints(Modifier.fillMaxSize()) {
-                if (maxWidth >= 700.dp) {
+                if (supportsFoldTwoPane(maxWidth)) {
                     LazyVerticalGrid(
                         columns = GridCells.Fixed(2),
                         contentPadding = PaddingValues(bottom = 12.dp),
@@ -135,6 +138,7 @@ private fun ProjectCard(project: ProjectEntity, onOpen: (Long) -> Unit) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun ProjectEditorScreen(
     project: ProjectEntity?,
@@ -173,21 +177,21 @@ internal fun ProjectEditorScreen(
     }
 
     Scaffold(topBar = { EditorHeader(if (project == null) "프로젝트 추가" else "프로젝트 수정", onBack) }) { padding ->
-        BoxWithConstraints(Modifier.fillMaxSize().padding(padding)) {
-            val wide = maxWidth >= 700.dp
+        BoxWithConstraints(Modifier.fillMaxSize().padding(padding).imePadding()) {
+            val wide = supportsFoldTwoPane(maxWidth)
             val form: @Composable () -> Unit = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("프로젝트 이름") }, singleLine = true)
                     OutlinedTextField(modelName, { modelName = it }, Modifier.fillMaxWidth(), label = { Text("모델명") }, singleLine = true)
                     OutlinedTextField(startDate, { startDate = it }, Modifier.fillMaxWidth(), label = { Text("시작일 (YYYY-MM-DD)") }, singleLine = true)
                     SectionTitle("프로젝트 타입")
-                    Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
                         ProjectType.entries.forEach { type ->
                             FilterChip(selected = projectType == type, onClick = { projectType = type }, label = { Text(ProjectType.label(type)) })
                         }
                     }
                     SectionTitle("작업 상태")
-                    Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
                         ProjectStatus.entries.forEach { item ->
                             FilterChip(selected = status == item, onClick = { status = item }, label = { Text(ProjectStatus.label(item)) })
                         }
@@ -227,10 +231,10 @@ internal fun ProjectEditorScreen(
                             )
                         },
                         enabled = name.isNotBlank(),
-                        modifier = Modifier.fillMaxWidth().height(46.dp),
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
                     ) { Text("프로젝트 저장") }
                     if (project != null) {
-                        OutlinedButton(onClick = { deleteConfirm = true }, modifier = Modifier.fillMaxWidth().height(42.dp)) {
+                        OutlinedButton(onClick = { deleteConfirm = true }, modifier = Modifier.fillMaxWidth().height(48.dp)) {
                             Text("프로젝트 삭제", color = MaterialTheme.colorScheme.error)
                         }
                     }
@@ -243,7 +247,7 @@ internal fun ProjectEditorScreen(
                 }
             } else {
                 Column(
-                    Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 8.dp).verticalScroll(rememberScrollState()),
+                    Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp).verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) { form(); media(); Spacer(Modifier.height(16.dp)) }
             }

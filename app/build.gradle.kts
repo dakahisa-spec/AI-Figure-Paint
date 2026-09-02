@@ -10,11 +10,11 @@ android {
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.aifigurepaint.app"
+        applicationId = "com.aifigurepaint.app.giftlocal"
         minSdk = 26
         targetSdk = 34
-        versionCode = 21
-        versionName = "0.7.9"
+        versionCode = 23
+        versionName = "0.8.1-gift-fold7"
     }
 
     buildFeatures {

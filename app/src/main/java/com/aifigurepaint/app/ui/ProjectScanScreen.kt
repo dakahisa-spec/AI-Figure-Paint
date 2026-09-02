@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+
 package com.aifigurepaint.app.ui
 
 import android.content.Context
@@ -8,11 +10,11 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -20,6 +22,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -168,8 +171,8 @@ internal fun ProjectScanScreen(
     }
 
     Scaffold(topBar = { EditorHeader("AI 프로젝트 촬영 등록", onBack) }) { padding ->
-        BoxWithConstraints(Modifier.fillMaxSize().padding(padding)) {
-            val wide = maxWidth >= 700.dp
+        BoxWithConstraints(Modifier.fillMaxSize().padding(padding).imePadding()) {
+            val wide = supportsFoldTwoPane(maxWidth)
             if (wide) {
                 Row(
                     Modifier.fillMaxSize().padding(20.dp),
@@ -337,7 +340,7 @@ private fun ProjectCapturePanel(
                 }
             } else {
                 PhotoPreview(selectedUri.toString(), Modifier.fillMaxWidth().height(218.dp))
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     photoUris.forEachIndexed { index, uri ->
                         Box(
                             Modifier.size(width = 92.dp, height = 72.dp)
@@ -360,15 +363,15 @@ private fun ProjectCapturePanel(
                         }
                     }
                 }
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     OutlinedButton(onClick = onReplaceCamera, enabled = !loading, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("선택 사진 촬영 교체") }
                     OutlinedButton(onClick = onReplaceGallery, enabled = !loading, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("갤러리 교체") }
                     TextButton(onClick = { onDelete(selectedIndex) }, enabled = !loading) { Text("삭제", color = MaterialTheme.colorScheme.error) }
                 }
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onCamera, enabled = canAddPhoto, modifier = Modifier.weight(1f).height(42.dp), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("사진 촬영 추가") }
-                OutlinedButton(onClick = onGallery, enabled = canAddPhoto, modifier = Modifier.weight(1f).height(42.dp), contentPadding = PaddingValues(horizontal = 8.dp)) {
+                Button(onClick = onCamera, enabled = canAddPhoto, modifier = Modifier.weight(1f).height(48.dp), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("사진 촬영 추가") }
+                OutlinedButton(onClick = onGallery, enabled = canAddPhoto, modifier = Modifier.weight(1f).height(48.dp), contentPadding = PaddingValues(horizontal = 8.dp)) {
                     Text("갤러리 추가", color = StudioNavy)
                 }
             }
@@ -378,7 +381,7 @@ private fun ProjectCapturePanel(
             Button(
                 onClick = onAnalyze,
                 enabled = photoUris.isNotEmpty() && !loading,
-                modifier = Modifier.fillMaxWidth().height(46.dp),
+                modifier = Modifier.fillMaxWidth().height(48.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = StudioTeal, contentColor = Color.White),
             ) {
                 if (loading) {
@@ -452,7 +455,7 @@ private fun ProjectDraftForm(
             OutlinedTextField(startDate, onStartDate, Modifier.fillMaxWidth(), label = { Text("시작일 후보 (YYYY-MM-DD)") }, singleLine = true)
             Text("사진에 날짜가 없으면 촬영일을 시작일 후보로 사용합니다.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             SectionTitle("작업 상태")
-            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+            FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
                 ProjectStatus.entries.forEach { item ->
                     FilterChip(
                         selected = status == item,
@@ -475,7 +478,7 @@ private fun ProjectDraftForm(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Button(onClick = onSave, enabled = canSave, modifier = Modifier.fillMaxWidth().height(46.dp)) {
+            Button(onClick = onSave, enabled = canSave, modifier = Modifier.fillMaxWidth().height(48.dp)) {
                 Text("확인한 정보로 프로젝트 등록")
             }
         }

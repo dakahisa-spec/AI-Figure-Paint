@@ -1,4 +1,6 @@
 .gradle/
+.kotlin/
+.android-sdk/
 .work-tools/
 local.properties
 build/
@@ -9,4 +11,3 @@ upgrade-signing/
 *.keystore
 *.jks
 *.properties.local
-

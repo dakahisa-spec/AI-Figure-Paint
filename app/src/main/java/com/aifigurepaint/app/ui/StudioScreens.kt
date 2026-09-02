@@ -87,7 +87,7 @@ internal fun AiSettingsDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    "API 키는 소스나 APK 상수에 포함되지 않으며 Android Keystore로 이 기기 안에 암호화됩니다. 배포용 앱은 서버 프록시 사용을 권장합니다.",
+                    "API 키는 소스나 APK 상수에 포함되지 않으며 Android Keystore로 이 기기 안에 암호화됩니다.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

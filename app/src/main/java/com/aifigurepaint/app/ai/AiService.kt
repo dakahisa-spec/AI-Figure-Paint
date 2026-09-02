@@ -149,6 +149,8 @@ interface AiService {
 class OpenAiService(
     private val apiKey: String,
     private val selection: AiModelSelection,
+    private val budgetStore: AiMonthlyBudgetStore? = null,
+    private val onBudgetUpdated: (AiBudgetSnapshot) -> Unit = {},
 ) : AiService {
     private val model: String = selection.modelId
 
@@ -848,6 +850,7 @@ class OpenAiService(
     }
 
     private suspend fun post(body: JSONObject, readTimeoutMs: Int = 60_000): JSONObject = withContext(Dispatchers.IO) {
+        val budgetEstimate = budgetStore?.checkBeforeRequest(model, body)
         val connection = (URL("https://api.openai.com/v1/responses").openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             connectTimeout = 20_000
@@ -870,7 +873,11 @@ class OpenAiService(
                 }
                 error(apiMessage?.take(180) ?: "AI 연결 오류 ($code)")
             }
-            JSONObject(text)
+            JSONObject(text).also { response ->
+                if (budgetEstimate != null) {
+                    budgetStore?.recordUsage(model, response, budgetEstimate)?.also(onBudgetUpdated)
+                }
+            }
         } finally {
             connection.disconnect()
         }
@@ -943,7 +950,12 @@ class AiSettingsStore(context: Context) {
     private val prefs = context.getSharedPreferences("ai_provider_settings", Context.MODE_PRIVATE)
 
     fun hasApiKey(): Boolean = prefs.contains(KEY_VALUE)
-    fun mode(): AiModelMode = AiModelMode.fromStored(prefs.getString(KEY_MODEL_MODE, null))
+    fun mode(): AiModelMode {
+        val stored = prefs.getString(KEY_MODEL_MODE, null)
+        val resolved = AiModelMode.fromStored(stored)
+        if (stored == "SOL") prefs.edit().putString(KEY_MODEL_MODE, AiModelMode.TERRA.name).apply()
+        return resolved
+    }
     fun selection(taskType: AiTaskType, highestQuality: Boolean = false): AiModelSelection =
         AiModelRouter.resolve(taskType, mode(), highestQuality)
     fun maskedKey(): String = if (hasApiKey()) "••••••••${readApiKey().takeLast(4)}" else "미설정"

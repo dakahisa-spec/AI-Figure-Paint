@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -35,6 +36,8 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -65,6 +68,45 @@ private sealed interface DetailPage {
     data object DataManagement : DetailPage
 }
 
+private fun encodeDetailPage(page: DetailPage?): String = when (page) {
+    null -> ""
+    is DetailPage.PaintEditor -> "paint-editor|${page.id.orEmpty()}"
+    DetailPage.PaintScan -> "paint-scan"
+    DetailPage.ProjectScan -> "project-scan"
+    is DetailPage.ProjectEditor -> "project-editor|${page.id.orEmpty()}"
+    is DetailPage.ProjectDetail -> "project-detail|${page.id}"
+    is DetailPage.RecipeEditor -> "recipe-editor|${page.id.orEmpty()}|${page.initialProjectId.orEmpty()}"
+    is DetailPage.RecipeDetail -> "recipe-detail|${page.id}"
+    is DetailPage.AiMix -> "ai-mix|${page.targetHex.orEmpty()}|${page.recipeId.orEmpty()}"
+    is DetailPage.PhotoAnalyzer -> "photo-analyzer|${page.recipeId.orEmpty()}"
+    DetailPage.DataManagement -> "data-management"
+}
+
+private fun Long?.orEmpty(): String = this?.toString().orEmpty()
+
+private fun decodeDetailPage(value: String): DetailPage? {
+    val parts = value.split('|')
+    fun idAt(index: Int): Long? = parts.getOrNull(index)?.toLongOrNull()
+    return when (parts.firstOrNull()) {
+        "paint-editor" -> DetailPage.PaintEditor(idAt(1))
+        "paint-scan" -> DetailPage.PaintScan
+        "project-scan" -> DetailPage.ProjectScan
+        "project-editor" -> DetailPage.ProjectEditor(idAt(1))
+        "project-detail" -> idAt(1)?.let { DetailPage.ProjectDetail(it) }
+        "recipe-editor" -> DetailPage.RecipeEditor(idAt(1), idAt(2))
+        "recipe-detail" -> idAt(1)?.let { DetailPage.RecipeDetail(it) }
+        "ai-mix" -> DetailPage.AiMix(parts.getOrNull(1)?.ifBlank { null }, idAt(2))
+        "photo-analyzer" -> DetailPage.PhotoAnalyzer(idAt(1))
+        "data-management" -> DetailPage.DataManagement
+        else -> null
+    }
+}
+
+private val detailPageStateSaver = Saver<androidx.compose.runtime.MutableState<DetailPage?>, String>(
+    save = { encodeDetailPage(it.value) },
+    restore = { mutableStateOf(decodeDetailPage(it)) },
+)
+
 @Composable
 fun AiFigurePaintApp(viewModel: AppViewModel) {
     val paints by viewModel.paints.collectAsState()
@@ -75,9 +117,9 @@ fun AiFigurePaintApp(viewModel: AppViewModel) {
     val aiConfigured by viewModel.aiConfigured.collectAsState()
     val aiModelMode by viewModel.aiModelMode.collectAsState()
     val snackbarHost = remember { SnackbarHostState() }
-    var tab by remember { mutableStateOf(RootTab.HOME) }
-    var detail by remember { mutableStateOf<DetailPage?>(null) }
-    var showAiSettings by remember { mutableStateOf(false) }
+    var tab by rememberSaveable { mutableStateOf(RootTab.HOME) }
+    var detail by rememberSaveable(saver = detailPageStateSaver) { mutableStateOf<DetailPage?>(null) }
+    var showAiSettings by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(message) {
         message?.let {
@@ -92,7 +134,7 @@ fun AiFigurePaintApp(viewModel: AppViewModel) {
         bottomBar = {
             if (detail == null) {
                 NavigationBar(
-                    modifier = Modifier.height(50.dp),
+                    modifier = Modifier.height(64.dp),
                     containerColor = MaterialTheme.colorScheme.surface,
                     tonalElevation = 0.dp,
                 ) {
@@ -114,9 +156,9 @@ fun AiFigurePaintApp(viewModel: AppViewModel) {
         },
     ) { padding ->
         BoxWithConstraints(
-            Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(padding),
+            Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(padding).imePadding(),
         ) {
-            val expanded = maxWidth >= 700.dp
+            val expanded = supportsFoldTwoPane(maxWidth)
             when (val page = detail) {
                 DetailPage.PaintScan -> PaintScanScreen(
                     viewModel = viewModel,
@@ -293,10 +335,10 @@ private fun HomeScreen(
     onSearch: () -> Unit,
 ) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
-        val wide = maxWidth >= 700.dp
+        val wide = supportsFoldTwoPane(maxWidth)
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(horizontal = if (wide) 14.dp else 12.dp, vertical = 10.dp),
+            contentPadding = PaddingValues(horizontal = if (wide) 20.dp else 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             item {
@@ -366,7 +408,7 @@ private fun HomeHero(
     onAiMix: () -> Unit,
 ) {
     BoxWithConstraints(Modifier.fillMaxWidth()) {
-        val wide = maxWidth >= 700.dp
+        val wide = supportsFoldTwoPane(maxWidth)
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 2.dp, vertical = 2.dp),
@@ -502,7 +544,7 @@ private fun AiPaintRegistrationCard(onScan: () -> Unit, modifier: Modifier = Mod
             Spacer(Modifier.size(10.dp))
             Button(
                 onClick = onScan,
-                modifier = Modifier.height(40.dp),
+                modifier = Modifier.height(48.dp),
                 colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = StudioTeal),
                 shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
                 contentPadding = PaddingValues(horizontal = 13.dp),
@@ -527,9 +569,9 @@ private fun QuickActionsCard(
         Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("QUICK ACTION", style = MaterialTheme.typography.labelMedium, color = StudioTeal, fontWeight = FontWeight.Bold)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                Button(onClick = onNewMix, modifier = Modifier.weight(1f).height(40.dp), shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp), contentPadding = PaddingValues(horizontal = 6.dp)) { Text("새 조색") }
-                OutlinedButton(onClick = onAddPaint, modifier = Modifier.weight(1f).height(40.dp), shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp), contentPadding = PaddingValues(horizontal = 6.dp)) { Text("도료 추가") }
-                OutlinedButton(onClick = onNewProject, modifier = Modifier.weight(1f).height(40.dp), shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp), contentPadding = PaddingValues(horizontal = 6.dp)) { Text("AI 프로젝트") }
+                Button(onClick = onNewMix, modifier = Modifier.weight(1f).height(48.dp), shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp), contentPadding = PaddingValues(horizontal = 6.dp)) { Text("새 조색") }
+                OutlinedButton(onClick = onAddPaint, modifier = Modifier.weight(1f).height(48.dp), shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp), contentPadding = PaddingValues(horizontal = 6.dp)) { Text("도료 추가") }
+                OutlinedButton(onClick = onNewProject, modifier = Modifier.weight(1f).height(48.dp), shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp), contentPadding = PaddingValues(horizontal = 6.dp)) { Text("AI 프로젝트") }
             }
         }
     }

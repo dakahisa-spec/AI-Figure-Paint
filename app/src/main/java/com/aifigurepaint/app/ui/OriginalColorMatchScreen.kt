@@ -463,7 +463,6 @@ private fun modelShortLabel(mode: AiModelMode): String = when (mode) {
     AiModelMode.AUTO -> "자동"
     AiModelMode.LUNA -> "Luna"
     AiModelMode.TERRA -> "Terra"
-    AiModelMode.SOL -> "Sol"
 }
 
 @Composable

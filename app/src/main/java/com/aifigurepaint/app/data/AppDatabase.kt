@@ -295,8 +295,9 @@ abstract class AppDatabase : RoomDatabase() {
                         db.execSQL(
                             """
                             INSERT INTO paints
-                            (brand, series, productCode, name, koreanName, colorValue, owned, memo, createdAt, updatedAt)
-                            VALUES (?, ?, ?, ?, ?, ?, 1, '', ?, ?)
+                            (brand, series, productCode, name, koreanName, colorValue,
+                             owned, stockLevel, favorite, lastUsedAt, memo, createdAt, updatedAt)
+                            VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, NULL, '', ?, ?)
                             """.trimIndent(),
                             arrayOf(
                                 paint.brand,

@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+
 package com.aifigurepaint.app.ui
 
 import android.content.Context
@@ -7,11 +9,11 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -19,6 +21,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -161,8 +164,8 @@ internal fun PaintScanScreen(
     }
 
     Scaffold(topBar = { EditorHeader("AI 도료 촬영 등록", onBack) }) { padding ->
-        BoxWithConstraints(Modifier.fillMaxSize().padding(padding)) {
-            val wide = maxWidth >= 700.dp
+        BoxWithConstraints(Modifier.fillMaxSize().padding(padding).imePadding()) {
+            val wide = supportsFoldTwoPane(maxWidth)
             if (wide) {
                 Row(
                     Modifier.fillMaxSize().padding(20.dp),
@@ -367,15 +370,15 @@ private fun PaintCapturePanel(
                         }
                     }
                 }
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     OutlinedButton(onClick = onReplaceCamera, enabled = !loading, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("선택 사진 촬영 교체") }
                     OutlinedButton(onClick = onReplaceGallery, enabled = !loading, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("갤러리 교체") }
                     TextButton(onClick = { onDelete(selectedIndex) }, enabled = !loading) { Text("삭제", color = MaterialTheme.colorScheme.error) }
                 }
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onCamera, enabled = canAddPhoto, modifier = Modifier.weight(1f).height(42.dp), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("사진 촬영 추가") }
-                OutlinedButton(onClick = onGallery, enabled = canAddPhoto, modifier = Modifier.weight(1f).height(42.dp), contentPadding = PaddingValues(horizontal = 8.dp)) {
+                Button(onClick = onCamera, enabled = canAddPhoto, modifier = Modifier.weight(1f).height(48.dp), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("사진 촬영 추가") }
+                OutlinedButton(onClick = onGallery, enabled = canAddPhoto, modifier = Modifier.weight(1f).height(48.dp), contentPadding = PaddingValues(horizontal = 8.dp)) {
                     Text("갤러리 추가", color = StudioNavy)
                 }
             }
@@ -385,7 +388,7 @@ private fun PaintCapturePanel(
             Button(
                 onClick = onAnalyze,
                 enabled = photoUris.isNotEmpty() && !loading,
-                modifier = Modifier.fillMaxWidth().height(46.dp),
+                modifier = Modifier.fillMaxWidth().height(48.dp),
                 colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = StudioTeal, contentColor = androidx.compose.ui.graphics.Color.White),
             ) {
                 if (loading) {
@@ -472,7 +475,7 @@ private fun PaintDraftForm(
             OutlinedTextField(koreanName, onKoreanName, Modifier.fillMaxWidth(), label = { Text("한글 이름") }, singleLine = true)
             OutlinedTextField(hex, onHex, Modifier.fillMaxWidth(), label = { Text("대표 색상 HEX") }, singleLine = true)
             SectionTitle("재고 상태", "촬영 등록 후 바로 재고에 반영")
-            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 StockLevel.entries.forEach { level ->
                     FilterChip(
                         selected = stockLevel == level,
@@ -487,7 +490,7 @@ private fun PaintDraftForm(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Button(onClick = onSave, enabled = canSave, modifier = Modifier.fillMaxWidth().height(46.dp)) {
+            Button(onClick = onSave, enabled = canSave, modifier = Modifier.fillMaxWidth().height(48.dp)) {
                 Text("확인한 정보로 도료 등록")
             }
         }

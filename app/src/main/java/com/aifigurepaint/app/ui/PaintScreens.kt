@@ -7,12 +7,15 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -63,6 +66,7 @@ private enum class PaintFilter(val label: String) {
     ALL("전체"), OWNED("보유"), NOT_OWNED("미보유"), FAVORITE("즐겨찾기"), RECENT("최근 사용")
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun PaintListScreen(
     paints: List<PaintEntity>,
@@ -104,15 +108,14 @@ internal fun PaintListScreen(
     val filtered = sortPaints(recentAware, sortMode)
     val missingCodes = paints.filter { it.productCode.isNullOrBlank() }
 
-    Column(Modifier.fillMaxSize().padding(horizontal = 14.dp)) {
-        Row(Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 9.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("내 도료", style = MaterialTheme.typography.headlineMedium)
-                Text("보유 ${paints.count { it.owned }} · 전체 ${paints.size}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+        Column(Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 9.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("내 도료", style = MaterialTheme.typography.headlineMedium)
+            Text("보유 ${paints.count { it.owned }} · 전체 ${paints.size}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onScan, modifier = Modifier.weight(1f).height(48.dp), contentPadding = PaddingValues(horizontal = 10.dp)) { Text("◎ AI 촬영") }
+                Button(onClick = onAdd, modifier = Modifier.weight(1f).height(48.dp), contentPadding = PaddingValues(horizontal = 13.dp)) { Text("＋ 추가") }
             }
-            OutlinedButton(onClick = onScan, modifier = Modifier.height(40.dp), contentPadding = PaddingValues(horizontal = 10.dp)) { Text("◎ AI 촬영") }
-            Spacer(Modifier.size(7.dp))
-            Button(onClick = onAdd, modifier = Modifier.height(40.dp), contentPadding = PaddingValues(horizontal = 13.dp)) { Text("＋ 추가") }
         }
         OutlinedTextField(
             value = query,
@@ -121,49 +124,43 @@ internal fun PaintListScreen(
             placeholder = { Text("도료명 · 한글명 · 코드 · 브랜드 검색") },
             singleLine = true,
         )
-        LazyRow(
+        FlowRow(
             modifier = Modifier.fillMaxWidth(),
-            contentPadding = PaddingValues(vertical = 7.dp),
             horizontalArrangement = Arrangement.spacedBy(7.dp),
+            verticalArrangement = Arrangement.spacedBy(7.dp),
         ) {
-            items(PaintFilter.entries) { item ->
+            PaintFilter.entries.forEach { item ->
                 FilterChip(selected = filter == item, onClick = { filter = item }, label = { Text(item.label) })
             }
-            item {
-                Box {
-                    FilterChip(selected = brand != "전체 브랜드", onClick = { brandMenu = true }, label = { Text(brand) })
-                    DropdownMenu(expanded = brandMenu, onDismissRequest = { brandMenu = false }) {
-                        brands.forEach { item ->
-                            DropdownMenuItem(text = { Text(item) }, onClick = { brand = item; brandMenu = false })
-                        }
+            Box {
+                FilterChip(selected = brand != "전체 브랜드", onClick = { brandMenu = true }, label = { Text(brand) })
+                DropdownMenu(expanded = brandMenu, onDismissRequest = { brandMenu = false }) {
+                    brands.forEach { item ->
+                        DropdownMenuItem(text = { Text(item) }, onClick = { brand = item; brandMenu = false })
                     }
                 }
             }
-            item {
-                PaintSortMenu(sortMode) { selected ->
-                    sortMode = selected
-                    PaintSortPreferences.save(context, selected)
-                }
+            PaintSortMenu(sortMode) { selected ->
+                sortMode = selected
+                PaintSortPreferences.save(context, selected)
             }
             if (missingCodes.isNotEmpty()) {
-                item {
-                    FilterChip(
-                        selected = false,
-                        onClick = {
-                            viewModel.clearProductCodeSearch()
-                            showBatchSearch = true
-                            viewModel.searchProductCodes(missingCodes.take(5))
-                        },
-                        label = { Text("미확인 번호 찾기") },
-                    )
-                }
+                FilterChip(
+                    selected = false,
+                    onClick = {
+                        viewModel.clearProductCodeSearch()
+                        showBatchSearch = true
+                        viewModel.searchProductCodes(missingCodes.take(5))
+                    },
+                    label = { Text("미확인 번호 찾기") },
+                )
             }
         }
         if (filtered.isEmpty()) {
             EmptyCard("조건에 맞는 도료가 없습니다.")
         } else {
             BoxWithConstraints(Modifier.fillMaxSize()) {
-                if (maxWidth >= 700.dp) {
+                if (supportsFoldTwoPane(maxWidth)) {
                     LazyVerticalGrid(
                         columns = GridCells.Fixed(2),
                         contentPadding = PaddingValues(bottom = 12.dp),
@@ -231,7 +228,7 @@ private fun PaintCard(
                     maxLines = 1,
                 )
             }
-            TextButton(onClick = { onToggleFavorite(paint) }, contentPadding = PaddingValues(4.dp), modifier = Modifier.size(34.dp)) {
+            TextButton(onClick = { onToggleFavorite(paint) }, contentPadding = PaddingValues(4.dp), modifier = Modifier.size(48.dp)) {
                 Text(if (paint.favorite) "★" else "☆", color = if (paint.favorite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Box {
@@ -254,6 +251,7 @@ private fun PaintCard(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun PaintEditorScreen(paint: PaintEntity?, viewModel: AppViewModel, onBack: () -> Unit) {
     val productCodeState by viewModel.productCodeSearchState.collectAsState()
@@ -263,7 +261,7 @@ internal fun PaintEditorScreen(paint: PaintEntity?, viewModel: AppViewModel, onB
     var name by remember(paint?.id) { mutableStateOf(paint?.name.orEmpty()) }
     var koreanName by remember(paint?.id) { mutableStateOf(paint?.koreanName.orEmpty()) }
     var hex by remember(paint?.id) { mutableStateOf(colorToHex(paint?.colorValue ?: 0xFFDDDDDD.toInt())) }
-    var stockLevel by remember(paint?.id) { mutableStateOf(paint?.stockLevel ?: StockLevel.MOST) }
+    var stockLevel by remember(paint?.id) { mutableStateOf(paint?.stockLevel ?: StockLevel.EMPTY) }
     var favorite by remember(paint?.id) { mutableStateOf(paint?.favorite ?: false) }
     var memo by remember(paint?.id) { mutableStateOf(paint?.memo.orEmpty()) }
     var deleteConfirm by remember { mutableStateOf(false) }
@@ -272,7 +270,7 @@ internal fun PaintEditorScreen(paint: PaintEntity?, viewModel: AppViewModel, onB
 
     Scaffold(topBar = { EditorHeader(if (paint == null) "도료 추가" else "도료 수정", onBack) }) { padding ->
         Column(
-            Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp, vertical = 10.dp).verticalScroll(rememberScrollState()),
+            Modifier.fillMaxSize().padding(padding).imePadding().padding(horizontal = 16.dp, vertical = 10.dp).verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -283,9 +281,18 @@ internal fun PaintEditorScreen(paint: PaintEntity?, viewModel: AppViewModel, onB
                 }
                 TextButton(onClick = { favorite = !favorite }) { Text(if (favorite) "★ 즐겨찾기" else "☆ 즐겨찾기") }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(brand, { brand = it }, Modifier.weight(1f), label = { Text("브랜드") }, singleLine = true)
-                OutlinedTextField(series, { series = it }, Modifier.weight(1f), label = { Text("시리즈") }, singleLine = true)
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                if (supportsFoldTwoPane(maxWidth)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(brand, { brand = it }, Modifier.weight(1f), label = { Text("브랜드") }, singleLine = true)
+                        OutlinedTextField(series, { series = it }, Modifier.weight(1f), label = { Text("시리즈") }, singleLine = true)
+                    }
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(brand, { brand = it }, Modifier.fillMaxWidth(), label = { Text("브랜드") }, singleLine = true)
+                        OutlinedTextField(series, { series = it }, Modifier.fillMaxWidth(), label = { Text("시리즈") }, singleLine = true)
+                    }
+                }
             }
             OutlinedTextField(code, { code = it }, Modifier.fillMaxWidth(), label = { Text("제품 코드") }, singleLine = true)
             if (paint != null) {
@@ -305,8 +312,8 @@ internal fun PaintEditorScreen(paint: PaintEntity?, viewModel: AppViewModel, onB
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
             )
             SectionTitle("재고 상태", "정확한 ml 대신 빠른 단계로 관리")
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                items(StockLevel.entries) { level ->
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                StockLevel.entries.forEach { level ->
                     FilterChip(selected = stockLevel == level, onClick = { stockLevel = level }, label = { Text(StockLevel.label(level)) })
                 }
             }
@@ -333,10 +340,10 @@ internal fun PaintEditorScreen(paint: PaintEntity?, viewModel: AppViewModel, onB
                     )
                 },
                 enabled = name.isNotBlank() && brand.isNotBlank(),
-                modifier = Modifier.fillMaxWidth().height(46.dp),
+                modifier = Modifier.fillMaxWidth().height(48.dp),
             ) { Text("저장") }
             if (paint != null) {
-                OutlinedButton(onClick = { deleteConfirm = true }, modifier = Modifier.fillMaxWidth().height(42.dp)) {
+                OutlinedButton(onClick = { deleteConfirm = true }, modifier = Modifier.fillMaxWidth().height(48.dp)) {
                     Text("도료 삭제", color = MaterialTheme.colorScheme.error)
                 }
             }

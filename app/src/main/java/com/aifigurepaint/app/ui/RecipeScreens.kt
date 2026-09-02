@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -81,22 +82,22 @@ internal fun RecipeListScreen(
     onAiMix: () -> Unit,
     onPhotoAnalyze: () -> Unit,
 ) {
-    Column(Modifier.fillMaxSize().padding(horizontal = 14.dp)) {
-        Row(Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("조색 레시피", style = MaterialTheme.typography.headlineMedium)
-                Text("저장된 레시피 ${cards.size}개", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+        Column(Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("조색 레시피", style = MaterialTheme.typography.headlineMedium)
+            Text("저장된 레시피 ${cards.size}개", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onAiMix, modifier = Modifier.weight(1f).height(48.dp)) { Text("AI 조색") }
+                Button(onClick = onAdd, modifier = Modifier.weight(1f).height(48.dp), contentPadding = PaddingValues(horizontal = 13.dp)) { Text("＋ 새 조색") }
             }
-            TextButton(onClick = onAiMix) { Text("AI 조색") }
-            Button(onClick = onAdd, modifier = Modifier.height(40.dp), contentPadding = PaddingValues(horizontal = 13.dp)) { Text("＋ 새 조색") }
         }
-        OutlinedButton(onClick = onPhotoAnalyze, modifier = Modifier.fillMaxWidth().height(40.dp)) { Text("사진에서 색상 추출") }
+        OutlinedButton(onClick = onPhotoAnalyze, modifier = Modifier.fillMaxWidth().height(48.dp)) { Text("사진에서 색상 추출") }
         Spacer(Modifier.height(8.dp))
         if (cards.isEmpty()) {
             EmptyCard("사용한 도료와 양을 기록해보세요.")
         } else {
             BoxWithConstraints(Modifier.fillMaxSize()) {
-                if (maxWidth >= 700.dp) {
+                if (supportsFoldTwoPane(maxWidth)) {
                     LazyVerticalGrid(
                         columns = GridCells.Fixed(2),
                         contentPadding = PaddingValues(bottom = 12.dp),
@@ -170,8 +171,8 @@ internal fun RecipeEditorScreen(
     }
 
     Scaffold(topBar = { EditorHeader(if (recipe == null) "새 조색" else "조색 수정", onBack) }) { padding ->
-        BoxWithConstraints(Modifier.fillMaxSize().padding(padding)) {
-            val wide = maxWidth >= 700.dp
+        BoxWithConstraints(Modifier.fillMaxSize().padding(padding).imePadding()) {
+            val wide = supportsFoldTwoPane(maxWidth)
             val left: @Composable () -> Unit = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -239,7 +240,7 @@ internal fun RecipeEditorScreen(
                     OutlinedButton(
                         onClick = { paints.firstOrNull()?.let { ingredients += IngredientDraft(System.nanoTime(), it.id, "") } },
                         enabled = paints.isNotEmpty(),
-                        modifier = Modifier.fillMaxWidth().height(40.dp),
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
                     ) { Text("＋ 도료 추가") }
                     val total = ingredients.sumOf { it.amount.toDoubleOrNull() ?: 0.0 }
                     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer), shape = RoundedCornerShape(12.dp)) {
@@ -271,7 +272,7 @@ internal fun RecipeEditorScreen(
                             )
                         },
                         enabled = name.isNotBlank() && total > 0 && paints.isNotEmpty(),
-                        modifier = Modifier.fillMaxWidth().height(46.dp),
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
                     ) { Text("레시피 저장") }
                 }
             }
@@ -285,7 +286,7 @@ internal fun RecipeEditorScreen(
                 }
             } else {
                 Column(
-                    Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 8.dp).verticalScroll(rememberScrollState()),
+                    Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp).verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                 ) { left(); right(); Spacer(Modifier.height(16.dp)) }
             }
