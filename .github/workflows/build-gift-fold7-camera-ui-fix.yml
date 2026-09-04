@@ -20,6 +20,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
       - name: Set up complete Temurin JDK 17
         uses: actions/setup-java@v4
