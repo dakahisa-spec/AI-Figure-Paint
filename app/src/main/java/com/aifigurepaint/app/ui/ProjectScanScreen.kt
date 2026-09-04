@@ -2,8 +2,13 @@
 
 package com.aifigurepaint.app.ui
 
+import android.Manifest
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.provider.Settings
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -22,6 +27,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -45,10 +51,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -57,6 +61,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
+import androidx.core.content.ContextCompat
 import com.aifigurepaint.app.AppViewModel
 import com.aifigurepaint.app.ai.AiModelRouter
 import com.aifigurepaint.app.ai.AiTaskType
@@ -77,16 +82,18 @@ internal fun ProjectScanScreen(
     val configured by viewModel.aiConfigured.collectAsState()
     val modelMode by viewModel.aiModelMode.collectAsState()
     val model = AiModelRouter.resolve(AiTaskType.SIMPLE_CHAT, modelMode).resultLabel
-    val photoUris = remember { mutableStateListOf<Uri>() }
-    var selectedPhotoIndex by remember { mutableIntStateOf(0) }
-    var pendingReplaceIndex by remember { mutableStateOf<Int?>(null) }
-    var cameraUri by remember { mutableStateOf<Uri?>(null) }
-    var projectName by remember { mutableStateOf("") }
-    var modelName by remember { mutableStateOf("") }
-    var startDate by remember { mutableStateOf(LocalDate.now().toString()) }
-    var status by remember { mutableStateOf(ProjectStatus.PLANNED) }
-    var memo by remember { mutableStateOf("") }
-    var notes by remember { mutableStateOf("") }
+    var photoUriStrings by rememberSaveable { mutableStateOf(emptyList<String>()) }
+    val photoUris = photoUriStrings.map(Uri::parse)
+    var selectedPhotoIndex by rememberSaveable { mutableStateOf(0) }
+    var pendingReplaceIndex by rememberSaveable { mutableStateOf<Int?>(null) }
+    var cameraUriText by rememberSaveable { mutableStateOf<String?>(null) }
+    var cameraNotice by rememberSaveable { mutableStateOf<String?>(null) }
+    var projectName by rememberSaveable { mutableStateOf("") }
+    var modelName by rememberSaveable { mutableStateOf("") }
+    var startDate by rememberSaveable { mutableStateOf(LocalDate.now().toString()) }
+    var status by rememberSaveable { mutableStateOf(ProjectStatus.PLANNED) }
+    var memo by rememberSaveable { mutableStateOf("") }
+    var notes by rememberSaveable { mutableStateOf("") }
 
     fun resetDraft() {
         viewModel.clearProjectScan()
@@ -99,21 +106,44 @@ internal fun ProjectScanScreen(
     }
 
     val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
-        if (success) {
-            cameraUri?.let { uri ->
+        val uri = cameraUriText?.let(Uri::parse)
+        if (success && uri != null && projectCaptureIsReadable(context, uri)) {
                 resetDraft()
                 val replaceIndex = pendingReplaceIndex
                 if (replaceIndex != null && replaceIndex in photoUris.indices) {
-                    photoUris[replaceIndex] = uri
+                    photoUriStrings = photoUriStrings.toMutableList().also { it[replaceIndex] = uri.toString() }
                     selectedPhotoIndex = replaceIndex
                 } else if (photoUris.size < 5) {
-                    photoUris += uri
-                    selectedPhotoIndex = photoUris.lastIndex
+                    photoUriStrings = photoUriStrings + uri.toString()
+                    selectedPhotoIndex = photoUriStrings.lastIndex
                 }
-            }
+            cameraNotice = null
+        } else {
+            uri?.let { deleteProjectCapture(context, it) }
+            cameraNotice = if (success) "촬영 파일을 읽을 수 없습니다. 다시 촬영해주세요." else "사진 촬영이 취소되었습니다."
+            Log.w("ProjectScanCamera", "Capture failed: success=$success, uri=$uri")
         }
         pendingReplaceIndex = null
-        cameraUri = null
+        cameraUriText = null
+    }
+    val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            runCatching {
+                createProjectScanUri(context).also {
+                    cameraUriText = it.toString()
+                    cameraNotice = null
+                    camera.launch(it)
+                }
+            }.onFailure {
+                pendingReplaceIndex = null
+                cameraNotice = "카메라용 사진 파일을 만들 수 없습니다."
+                Log.e("ProjectScanCamera", "Could not create camera URI", it)
+            }
+        } else {
+            pendingReplaceIndex = null
+            cameraNotice = "카메라 권한이 거부되었습니다. 앱 설정에서 카메라 권한을 허용해주세요."
+            Log.w("ProjectScanCamera", "Camera permission denied")
+        }
     }
     val gallery = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         val remaining = (5 - photoUris.size).coerceAtLeast(0)
@@ -121,9 +151,9 @@ internal fun ProjectScanScreen(
         if (accepted.isNotEmpty()) resetDraft()
         accepted.forEach { uri ->
             persistPhotoPermission(context, uri)
-            photoUris += uri
+            photoUriStrings = photoUriStrings + uri.toString()
         }
-        if (accepted.isNotEmpty()) selectedPhotoIndex = photoUris.lastIndex
+        if (accepted.isNotEmpty()) selectedPhotoIndex = photoUriStrings.lastIndex
     }
     val replaceGallery = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
@@ -131,7 +161,7 @@ internal fun ProjectScanScreen(
             resetDraft()
             val replaceIndex = pendingReplaceIndex
             if (replaceIndex != null && replaceIndex in photoUris.indices) {
-                photoUris[replaceIndex] = uri
+                photoUriStrings = photoUriStrings.toMutableList().also { it[replaceIndex] = uri.toString() }
                 selectedPhotoIndex = replaceIndex
             }
         }
@@ -141,9 +171,21 @@ internal fun ProjectScanScreen(
     fun launchCamera(replaceIndex: Int? = null) {
         if (replaceIndex == null && photoUris.size >= 5) return
         pendingReplaceIndex = replaceIndex
-        val uri = createProjectScanUri(context)
-        cameraUri = uri
-        camera.launch(uri)
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            runCatching {
+                createProjectScanUri(context).also {
+                    cameraUriText = it.toString()
+                    cameraNotice = null
+                    camera.launch(it)
+                }
+            }.onFailure {
+                pendingReplaceIndex = null
+                cameraNotice = "카메라용 사진 파일을 만들 수 없습니다."
+                Log.e("ProjectScanCamera", "Could not create camera URI", it)
+            }
+        } else {
+            cameraPermission.launch(Manifest.permission.CAMERA)
+        }
     }
 
     fun launchGallery(replaceIndex: Int? = null) {
@@ -155,8 +197,8 @@ internal fun ProjectScanScreen(
     fun deletePhoto(index: Int) {
         if (index !in photoUris.indices) return
         resetDraft()
-        photoUris.removeAt(index)
-        selectedPhotoIndex = selectedPhotoIndex.coerceAtMost((photoUris.size - 1).coerceAtLeast(0))
+        photoUriStrings = photoUriStrings.toMutableList().also { it.removeAt(index) }
+        selectedPhotoIndex = selectedPhotoIndex.coerceAtMost((photoUriStrings.size - 1).coerceAtLeast(0))
     }
 
     LaunchedEffect(scanState.draft) {
@@ -185,6 +227,7 @@ internal fun ProjectScanScreen(
                         model = model,
                         loading = scanState.loading,
                         notice = scanState.notice,
+                        cameraNotice = cameraNotice,
                         onSelect = { selectedPhotoIndex = it },
                         onDelete = ::deletePhoto,
                         onCamera = { launchCamera() },
@@ -193,6 +236,7 @@ internal fun ProjectScanScreen(
                         onReplaceGallery = { launchGallery(selectedPhotoIndex) },
                         onAnalyze = { viewModel.analyzeProjectPhotos(photoUris.toList()) },
                         onSettings = onSettings,
+                        onCameraSettings = { openProjectAppSettings(context) },
                         modifier = Modifier.weight(.43f).fillMaxHeight(),
                     )
                     ProjectDraftForm(
@@ -241,6 +285,7 @@ internal fun ProjectScanScreen(
                         model = model,
                         loading = scanState.loading,
                         notice = scanState.notice,
+                        cameraNotice = cameraNotice,
                         onSelect = { selectedPhotoIndex = it },
                         onDelete = ::deletePhoto,
                         onCamera = { launchCamera() },
@@ -249,6 +294,8 @@ internal fun ProjectScanScreen(
                         onReplaceGallery = { launchGallery(selectedPhotoIndex) },
                         onAnalyze = { viewModel.analyzeProjectPhotos(photoUris.toList()) },
                         onSettings = onSettings,
+                        onCameraSettings = { openProjectAppSettings(context) },
+                        scrollContent = false,
                     )
                     ProjectDraftForm(
                         projectName = projectName,
@@ -298,6 +345,7 @@ private fun ProjectCapturePanel(
     model: String,
     loading: Boolean,
     notice: String?,
+    cameraNotice: String?,
     onSelect: (Int) -> Unit,
     onDelete: (Int) -> Unit,
     onCamera: () -> Unit,
@@ -306,7 +354,9 @@ private fun ProjectCapturePanel(
     onReplaceGallery: () -> Unit,
     onAnalyze: () -> Unit,
     onSettings: () -> Unit,
+    onCameraSettings: () -> Unit,
     modifier: Modifier = Modifier,
+    scrollContent: Boolean = true,
 ) {
     val selectedUri = photoUris.getOrNull(selectedIndex)
     val canAddPhoto = photoUris.size < 5 && !loading
@@ -316,7 +366,8 @@ private fun ProjectCapturePanel(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
     ) {
-        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        val scrollModifier = if (scrollContent) Modifier.verticalScroll(rememberScrollState()) else Modifier
+        Column(Modifier.fillMaxWidth().then(scrollModifier).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("PROJECT VISION", style = MaterialTheme.typography.labelMedium, color = StudioTeal, fontWeight = FontWeight.Bold)
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text("사진에서 프로젝트\n등록 초안을 만듭니다.", modifier = Modifier.weight(1f), style = MaterialTheme.typography.headlineMedium, color = StudioNavy)
@@ -370,9 +421,17 @@ private fun ProjectCapturePanel(
                 }
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onCamera, enabled = canAddPhoto, modifier = Modifier.weight(1f).height(48.dp), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("사진 촬영 추가") }
-                OutlinedButton(onClick = onGallery, enabled = canAddPhoto, modifier = Modifier.weight(1f).height(48.dp), contentPadding = PaddingValues(horizontal = 8.dp)) {
+                Button(onClick = onCamera, enabled = canAddPhoto, modifier = Modifier.weight(1f).heightIn(min = 48.dp), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp)) { Text("사진 촬영 추가", maxLines = 2, softWrap = true) }
+                OutlinedButton(onClick = onGallery, enabled = canAddPhoto, modifier = Modifier.weight(1f).heightIn(min = 48.dp), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp)) {
                     Text("갤러리 추가", color = StudioNavy)
+                }
+            }
+            if (!cameraNotice.isNullOrBlank()) {
+                Text(cameraNotice, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                if (cameraNotice?.contains("권한") == true) {
+                    OutlinedButton(onClick = onCameraSettings, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                        Text("앱 설정에서 카메라 권한 열기")
+                    }
                 }
             }
             if (photoUris.size >= 5) {
@@ -381,7 +440,7 @@ private fun ProjectCapturePanel(
             Button(
                 onClick = onAnalyze,
                 enabled = photoUris.isNotEmpty() && !loading,
-                modifier = Modifier.fillMaxWidth().height(48.dp),
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = StudioTeal, contentColor = Color.White),
             ) {
                 if (loading) {
@@ -478,7 +537,7 @@ private fun ProjectDraftForm(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Button(onClick = onSave, enabled = canSave, modifier = Modifier.fillMaxWidth().height(48.dp)) {
+            Button(onClick = onSave, enabled = canSave, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                 Text("확인한 정보로 프로젝트 등록")
             }
         }
@@ -489,4 +548,19 @@ private fun createProjectScanUri(context: Context): Uri {
     val directory = File(context.cacheDir, "project_scan").apply { mkdirs() }
     val image = File(directory, "project_${System.currentTimeMillis()}.jpg")
     return FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", image)
+}
+
+private fun projectCaptureIsReadable(context: Context, uri: Uri): Boolean = runCatching {
+    context.contentResolver.openInputStream(uri)?.use { it.read() != -1 } == true
+}.getOrDefault(false)
+
+private fun deleteProjectCapture(context: Context, uri: Uri) {
+    runCatching { context.contentResolver.delete(uri, null, null) }
+}
+
+private fun openProjectAppSettings(context: Context) {
+    context.startActivity(
+        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+    )
 }

@@ -1,7 +1,11 @@
 package com.aifigurepaint.app.ui
 
+import android.Manifest
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -51,6 +55,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
+import androidx.core.content.ContextCompat
 import com.aifigurepaint.app.AppViewModel
 import com.aifigurepaint.app.ai.AiMixComponent
 import com.aifigurepaint.app.ai.AiMixSuggestion
@@ -141,6 +146,19 @@ internal fun OriginalColorMatchDialog(
         cameraUri = null
         if (!success) pendingReplaceIndex = null
     }
+    val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            runCatching {
+                createOriginalMatchUri(context).also { cameraUri = it; camera.launch(it) }
+            }.onFailure {
+                pendingReplaceIndex = null
+                photoNotice = "카메라용 사진 파일을 만들 수 없습니다."
+            }
+        } else {
+            pendingReplaceIndex = null
+            photoNotice = "카메라 권한이 거부되었습니다. 앱 설정에서 카메라 권한을 허용해주세요."
+        }
+    }
     val addPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         val remaining = (5 - imageUris.size).coerceAtLeast(0)
         uris.take(remaining).forEach { acceptPhoto(it) }
@@ -150,7 +168,16 @@ internal fun OriginalColorMatchDialog(
     }
     fun takePhoto(replaceIndex: Int? = null) {
         pendingReplaceIndex = replaceIndex
-        createOriginalMatchUri(context).also { cameraUri = it; camera.launch(it) }
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            runCatching {
+                createOriginalMatchUri(context).also { cameraUri = it; camera.launch(it) }
+            }.onFailure {
+                pendingReplaceIndex = null
+                photoNotice = "카메라용 사진 파일을 만들 수 없습니다."
+            }
+        } else {
+            cameraPermission.launch(Manifest.permission.CAMERA)
+        }
     }
 
     val photoPane: @Composable (Int) -> Unit = { columns ->
@@ -253,7 +280,20 @@ internal fun OriginalColorMatchDialog(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             state.activeModelLabel?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary) }
-            photoNotice?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+            photoNotice?.let { notice ->
+                Text(notice, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                if (notice.contains("권한")) {
+                    OutlinedButton(
+                        onClick = {
+                            context.startActivity(
+                                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("앱 설정에서 카메라 권한 열기") }
+                }
+            }
             if (state.photoAnalysisTimedOut) {
                 OutlinedButton(
                     onClick = { showModelChooser = true },

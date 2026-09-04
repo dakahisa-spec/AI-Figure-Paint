@@ -13,8 +13,8 @@ android {
         applicationId = "com.aifigurepaint.app.giftlocal"
         minSdk = 26
         targetSdk = 34
-        versionCode = 23
-        versionName = "0.8.1-gift-fold7"
+        versionCode = 24
+        versionName = "0.8.2-gift-fold7-camera-ui-fix"
     }
 
     buildFeatures {

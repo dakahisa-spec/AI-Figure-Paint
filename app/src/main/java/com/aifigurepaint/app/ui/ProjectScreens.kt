@@ -1,7 +1,11 @@
 package com.aifigurepaint.app.ui
 
+import android.Manifest
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -56,6 +60,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
+import androidx.core.content.ContextCompat
 import com.aifigurepaint.app.AppViewModel
 import com.aifigurepaint.app.PartsComparisonUiState
 import com.aifigurepaint.app.data.PartComparisonEntity
@@ -518,6 +523,7 @@ internal fun PartsComparisonDialog(
     var currentUri by remember(project.id) { mutableStateOf<String?>(null) }
     var cameraUri by remember { mutableStateOf<Uri?>(null) }
     var captureTarget by remember { mutableStateOf<String?>(null) }
+    var cameraNotice by remember { mutableStateOf<String?>(null) }
 
     fun acceptPhoto(source: Uri, target: String) {
         copyPhotoToAppStorage(context, source)?.let { stored ->
@@ -535,6 +541,19 @@ internal fun PartsComparisonDialog(
         cameraUri = null
         captureTarget = null
     }
+    val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            runCatching {
+                createPartsCompareUri(context).also { cameraUri = it; camera.launch(it) }
+            }.onFailure {
+                captureTarget = null
+                cameraNotice = "카메라용 사진 파일을 만들 수 없습니다."
+            }
+        } else {
+            captureTarget = null
+            cameraNotice = "카메라 권한이 거부되었습니다. 앱 설정에서 카메라 권한을 허용해주세요."
+        }
+    }
     val baselinePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { acceptPhoto(it, "BASELINE") }
     }
@@ -544,7 +563,16 @@ internal fun PartsComparisonDialog(
 
     fun takePhoto(target: String) {
         captureTarget = target
-        createPartsCompareUri(context).also { cameraUri = it; camera.launch(it) }
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            runCatching {
+                createPartsCompareUri(context).also { cameraUri = it; cameraNotice = null; camera.launch(it) }
+            }.onFailure {
+                captureTarget = null
+                cameraNotice = "카메라용 사진 파일을 만들 수 없습니다."
+            }
+        } else {
+            cameraPermission.launch(Manifest.permission.CAMERA)
+        }
     }
 
     AlertDialog(
@@ -573,6 +601,20 @@ internal fun PartsComparisonDialog(
                             OutlinedButton(onClick = { takePhoto("CURRENT") }, modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 5.dp)) { Text("촬영") }
                             OutlinedButton(onClick = { currentPicker.launch(arrayOf("image/*")) }, modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 5.dp)) { Text("갤러리") }
                         }
+                    }
+                }
+                cameraNotice?.let { notice ->
+                    Text(notice, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    if (notice.contains("권한")) {
+                        OutlinedButton(
+                            onClick = {
+                                context.startActivity(
+                                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))
+                                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                                )
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text("앱 설정에서 카메라 권한 열기") }
                     }
                 }
                 if (baselineUri != null && baselineUri != project.partsBaselinePhotoUri) {

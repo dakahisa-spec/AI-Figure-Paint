@@ -3,7 +3,9 @@ package com.aifigurepaint.app.ui
 import android.content.Context
 import android.content.Intent
 import android.graphics.BitmapFactory
+import android.graphics.ImageDecoder
 import android.net.Uri
+import android.os.Build
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -78,10 +80,21 @@ fun PhotoPreview(uriText: String?, modifier: Modifier = Modifier) {
             withContext(Dispatchers.IO) {
                 runCatching {
                     val uri = Uri.parse(text)
-                    val stream = if (uri.scheme == "file") FileInputStream(File(requireNotNull(uri.path)))
-                    else requireNotNull(context.contentResolver.openInputStream(uri))
-                    stream.use {
-                        BitmapFactory.decodeStream(it)?.asImageBitmap()
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        val source = if (uri.scheme == "file") {
+                            ImageDecoder.createSource(File(requireNotNull(uri.path)))
+                        } else {
+                            ImageDecoder.createSource(context.contentResolver, uri)
+                        }
+                        ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+                            decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                            val largestSide = maxOf(info.size.width, info.size.height)
+                            decoder.setTargetSampleSize((largestSide / 1600).coerceAtLeast(1))
+                        }.asImageBitmap()
+                    } else {
+                        val stream = if (uri.scheme == "file") FileInputStream(File(requireNotNull(uri.path)))
+                        else requireNotNull(context.contentResolver.openInputStream(uri))
+                        stream.use { BitmapFactory.decodeStream(it)?.asImageBitmap() }
                     }
                 }.getOrNull()
             }

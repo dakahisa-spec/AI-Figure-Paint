@@ -2,8 +2,13 @@
 
 package com.aifigurepaint.app.ui
 
+import android.Manifest
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.provider.Settings
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -21,6 +26,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -43,10 +49,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -54,6 +58,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
+import androidx.core.content.ContextCompat
 import com.aifigurepaint.app.AppViewModel
 import com.aifigurepaint.app.ai.AiModelRouter
 import com.aifigurepaint.app.ai.AiTaskType
@@ -73,18 +78,20 @@ internal fun PaintScanScreen(
     val configured by viewModel.aiConfigured.collectAsState()
     val modelMode by viewModel.aiModelMode.collectAsState()
     val model = AiModelRouter.resolve(AiTaskType.PAINT_SCAN, modelMode).resultLabel
-    val photoUris = remember { mutableStateListOf<Uri>() }
-    var selectedPhotoIndex by remember { mutableIntStateOf(0) }
-    var pendingReplaceIndex by remember { mutableStateOf<Int?>(null) }
-    var cameraUri by remember { mutableStateOf<Uri?>(null) }
-    var brand by remember { mutableStateOf("") }
-    var series by remember { mutableStateOf("") }
-    var code by remember { mutableStateOf("") }
-    var name by remember { mutableStateOf("") }
-    var koreanName by remember { mutableStateOf("") }
-    var hex by remember { mutableStateOf("#808080") }
-    var notes by remember { mutableStateOf("") }
-    var stockLevel by remember { mutableStateOf(StockLevel.MOST) }
+    var photoUriStrings by rememberSaveable { mutableStateOf(emptyList<String>()) }
+    val photoUris = photoUriStrings.map(Uri::parse)
+    var selectedPhotoIndex by rememberSaveable { mutableStateOf(0) }
+    var pendingReplaceIndex by rememberSaveable { mutableStateOf<Int?>(null) }
+    var cameraUriText by rememberSaveable { mutableStateOf<String?>(null) }
+    var cameraNotice by rememberSaveable { mutableStateOf<String?>(null) }
+    var brand by rememberSaveable { mutableStateOf("") }
+    var series by rememberSaveable { mutableStateOf("") }
+    var code by rememberSaveable { mutableStateOf("") }
+    var name by rememberSaveable { mutableStateOf("") }
+    var koreanName by rememberSaveable { mutableStateOf("") }
+    var hex by rememberSaveable { mutableStateOf("#808080") }
+    var notes by rememberSaveable { mutableStateOf("") }
+    var stockLevel by rememberSaveable { mutableStateOf(StockLevel.MOST) }
 
     fun resetDraft() {
         viewModel.clearPaintScan()
@@ -98,21 +105,44 @@ internal fun PaintScanScreen(
     }
 
     val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
-        if (success) {
-            cameraUri?.let { uri ->
+        val uri = cameraUriText?.let(Uri::parse)
+        if (success && uri != null && capturedImageIsReadable(context, uri)) {
                 resetDraft()
                 val replaceIndex = pendingReplaceIndex
                 if (replaceIndex != null && replaceIndex in photoUris.indices) {
-                    photoUris[replaceIndex] = uri
+                    photoUriStrings = photoUriStrings.toMutableList().also { it[replaceIndex] = uri.toString() }
                     selectedPhotoIndex = replaceIndex
                 } else if (photoUris.size < 3) {
-                    photoUris += uri
-                    selectedPhotoIndex = photoUris.lastIndex
+                    photoUriStrings = photoUriStrings + uri.toString()
+                    selectedPhotoIndex = photoUriStrings.lastIndex
                 }
-            }
+            cameraNotice = null
+        } else {
+            uri?.let { deleteCapturedImage(context, it) }
+            cameraNotice = if (success) "촬영 파일을 읽을 수 없습니다. 다시 촬영해주세요." else "사진 촬영이 취소되었습니다."
+            Log.w("PaintScanCamera", "Capture failed: success=$success, uri=$uri")
         }
         pendingReplaceIndex = null
-        cameraUri = null
+        cameraUriText = null
+    }
+    val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            runCatching {
+                createPaintScanUri(context).also {
+                    cameraUriText = it.toString()
+                    cameraNotice = null
+                    camera.launch(it)
+                }
+            }.onFailure {
+                pendingReplaceIndex = null
+                cameraNotice = "카메라용 사진 파일을 만들 수 없습니다."
+                Log.e("PaintScanCamera", "Could not create camera URI", it)
+            }
+        } else {
+            pendingReplaceIndex = null
+            cameraNotice = "카메라 권한이 거부되었습니다. 앱 설정에서 카메라 권한을 허용해주세요."
+            Log.w("PaintScanCamera", "Camera permission denied")
+        }
     }
     val gallery = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
@@ -120,11 +150,11 @@ internal fun PaintScanScreen(
             resetDraft()
             val replaceIndex = pendingReplaceIndex
             if (replaceIndex != null && replaceIndex in photoUris.indices) {
-                photoUris[replaceIndex] = uri
+                photoUriStrings = photoUriStrings.toMutableList().also { it[replaceIndex] = uri.toString() }
                 selectedPhotoIndex = replaceIndex
             } else if (photoUris.size < 3) {
-                photoUris += uri
-                selectedPhotoIndex = photoUris.lastIndex
+                photoUriStrings = photoUriStrings + uri.toString()
+                selectedPhotoIndex = photoUriStrings.lastIndex
             }
         }
         pendingReplaceIndex = null
@@ -133,9 +163,21 @@ internal fun PaintScanScreen(
     fun launchCamera(replaceIndex: Int? = null) {
         if (replaceIndex == null && photoUris.size >= 3) return
         pendingReplaceIndex = replaceIndex
-        val uri = createPaintScanUri(context)
-        cameraUri = uri
-        camera.launch(uri)
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            runCatching {
+                createPaintScanUri(context).also {
+                    cameraUriText = it.toString()
+                    cameraNotice = null
+                    camera.launch(it)
+                }
+            }.onFailure {
+                pendingReplaceIndex = null
+                cameraNotice = "카메라용 사진 파일을 만들 수 없습니다."
+                Log.e("PaintScanCamera", "Could not create camera URI", it)
+            }
+        } else {
+            cameraPermission.launch(Manifest.permission.CAMERA)
+        }
     }
 
     fun launchGallery(replaceIndex: Int? = null) {
@@ -147,8 +189,8 @@ internal fun PaintScanScreen(
     fun deletePhoto(index: Int) {
         if (index !in photoUris.indices) return
         resetDraft()
-        photoUris.removeAt(index)
-        selectedPhotoIndex = selectedPhotoIndex.coerceAtMost((photoUris.size - 1).coerceAtLeast(0))
+        photoUriStrings = photoUriStrings.toMutableList().also { it.removeAt(index) }
+        selectedPhotoIndex = selectedPhotoIndex.coerceAtMost((photoUriStrings.size - 1).coerceAtLeast(0))
     }
 
     LaunchedEffect(scanState.draft) {
@@ -178,6 +220,7 @@ internal fun PaintScanScreen(
                         model = model,
                         loading = scanState.loading,
                         notice = scanState.notice,
+                        cameraNotice = cameraNotice,
                         onSelect = { selectedPhotoIndex = it },
                         onDelete = ::deletePhoto,
                         onCamera = { launchCamera() },
@@ -186,6 +229,7 @@ internal fun PaintScanScreen(
                         onReplaceGallery = { launchGallery(selectedPhotoIndex) },
                         onAnalyze = { viewModel.analyzePaintPhotos(photoUris.toList()) },
                         onSettings = onSettings,
+                        onCameraSettings = { openAppSettings(context) },
                         modifier = Modifier.weight(.43f).fillMaxHeight(),
                     )
                     PaintDraftForm(
@@ -240,6 +284,7 @@ internal fun PaintScanScreen(
                         model = model,
                         loading = scanState.loading,
                         notice = scanState.notice,
+                        cameraNotice = cameraNotice,
                         onSelect = { selectedPhotoIndex = it },
                         onDelete = ::deletePhoto,
                         onCamera = { launchCamera() },
@@ -248,6 +293,8 @@ internal fun PaintScanScreen(
                         onReplaceGallery = { launchGallery(selectedPhotoIndex) },
                         onAnalyze = { viewModel.analyzePaintPhotos(photoUris.toList()) },
                         onSettings = onSettings,
+                        onCameraSettings = { openAppSettings(context) },
+                        scrollContent = false,
                     )
                     PaintDraftForm(
                         brand = brand,
@@ -303,6 +350,7 @@ private fun PaintCapturePanel(
     model: String,
     loading: Boolean,
     notice: String?,
+    cameraNotice: String?,
     onSelect: (Int) -> Unit,
     onDelete: (Int) -> Unit,
     onCamera: () -> Unit,
@@ -311,7 +359,9 @@ private fun PaintCapturePanel(
     onReplaceGallery: () -> Unit,
     onAnalyze: () -> Unit,
     onSettings: () -> Unit,
+    onCameraSettings: () -> Unit,
     modifier: Modifier = Modifier,
+    scrollContent: Boolean = true,
 ) {
     val selectedUri = photoUris.getOrNull(selectedIndex)
     val canAddPhoto = photoUris.size < 3 && !loading
@@ -321,7 +371,8 @@ private fun PaintCapturePanel(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
     ) {
-        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        val scrollModifier = if (scrollContent) Modifier.verticalScroll(rememberScrollState()) else Modifier
+        Column(Modifier.fillMaxWidth().then(scrollModifier).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("PAINT LABEL SCAN", style = MaterialTheme.typography.labelMedium, color = StudioTeal, fontWeight = FontWeight.Bold)
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text("여러 각도에서\n도료 정보를 확인합니다.", modifier = Modifier.weight(1f), style = MaterialTheme.typography.headlineMedium, color = StudioNavy)
@@ -377,9 +428,17 @@ private fun PaintCapturePanel(
                 }
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onCamera, enabled = canAddPhoto, modifier = Modifier.weight(1f).height(48.dp), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("사진 촬영 추가") }
-                OutlinedButton(onClick = onGallery, enabled = canAddPhoto, modifier = Modifier.weight(1f).height(48.dp), contentPadding = PaddingValues(horizontal = 8.dp)) {
+                Button(onClick = onCamera, enabled = canAddPhoto, modifier = Modifier.weight(1f).heightIn(min = 48.dp), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp)) { Text("사진 촬영 추가", maxLines = 2, softWrap = true) }
+                OutlinedButton(onClick = onGallery, enabled = canAddPhoto, modifier = Modifier.weight(1f).heightIn(min = 48.dp), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp)) {
                     Text("갤러리 추가", color = StudioNavy)
+                }
+            }
+            if (!cameraNotice.isNullOrBlank()) {
+                Text(cameraNotice, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                if (cameraNotice?.contains("권한") == true) {
+                    OutlinedButton(onClick = onCameraSettings, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                        Text("앱 설정에서 카메라 권한 열기")
+                    }
                 }
             }
             if (photoUris.size == 3) {
@@ -388,7 +447,7 @@ private fun PaintCapturePanel(
             Button(
                 onClick = onAnalyze,
                 enabled = photoUris.isNotEmpty() && !loading,
-                modifier = Modifier.fillMaxWidth().height(48.dp),
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                 colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = StudioTeal, contentColor = androidx.compose.ui.graphics.Color.White),
             ) {
                 if (loading) {
@@ -466,9 +525,18 @@ private fun PaintDraftForm(
                 Spacer(Modifier.size(10.dp))
                 ColorSwatch(parseHexColor(hex, 0xFF808080.toInt()), 48.dp)
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(brand, onBrand, Modifier.weight(1f), label = { Text("브랜드 *") }, singleLine = true)
-                OutlinedTextField(series, onSeries, Modifier.weight(1f), label = { Text("시리즈") }, singleLine = true)
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                if (maxWidth < 420.dp) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OutlinedTextField(brand, onBrand, Modifier.fillMaxWidth(), label = { Text("브랜드 *") }, singleLine = true)
+                        OutlinedTextField(series, onSeries, Modifier.fillMaxWidth(), label = { Text("시리즈") }, singleLine = true)
+                    }
+                } else {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(brand, onBrand, Modifier.weight(1f), label = { Text("브랜드 *") }, singleLine = true)
+                        OutlinedTextField(series, onSeries, Modifier.weight(1f), label = { Text("시리즈") }, singleLine = true)
+                    }
+                }
             }
             OutlinedTextField(code, onCode, Modifier.fillMaxWidth(), label = { Text("제품 코드") }, singleLine = true)
             OutlinedTextField(name, onName, Modifier.fillMaxWidth(), label = { Text("제품명 *") }, singleLine = true)
@@ -490,7 +558,7 @@ private fun PaintDraftForm(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Button(onClick = onSave, enabled = canSave, modifier = Modifier.fillMaxWidth().height(48.dp)) {
+            Button(onClick = onSave, enabled = canSave, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                 Text("확인한 정보로 도료 등록")
             }
         }
@@ -501,4 +569,19 @@ private fun createPaintScanUri(context: Context): Uri {
     val directory = File(context.cacheDir, "paint_scan").apply { mkdirs() }
     val image = File(directory, "paint_${System.currentTimeMillis()}.jpg")
     return FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", image)
+}
+
+private fun capturedImageIsReadable(context: Context, uri: Uri): Boolean = runCatching {
+    context.contentResolver.openInputStream(uri)?.use { it.read() != -1 } == true
+}.getOrDefault(false)
+
+private fun deleteCapturedImage(context: Context, uri: Uri) {
+    runCatching { context.contentResolver.delete(uri, null, null) }
+}
+
+private fun openAppSettings(context: Context) {
+    context.startActivity(
+        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+    )
 }

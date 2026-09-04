@@ -13,7 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -44,6 +44,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.aifigurepaint.app.AppViewModel
@@ -134,7 +135,7 @@ fun AiFigurePaintApp(viewModel: AppViewModel) {
         bottomBar = {
             if (detail == null) {
                 NavigationBar(
-                    modifier = Modifier.height(64.dp),
+                    modifier = Modifier.heightIn(min = 64.dp),
                     containerColor = MaterialTheme.colorScheme.surface,
                     tonalElevation = 0.dp,
                 ) {
@@ -156,7 +157,7 @@ fun AiFigurePaintApp(viewModel: AppViewModel) {
         },
     ) { padding ->
         BoxWithConstraints(
-            Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(padding).imePadding(),
+            Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(padding),
         ) {
             val expanded = supportsFoldTwoPane(maxWidth)
             when (val page = detail) {
@@ -532,23 +533,47 @@ private fun AiPaintRegistrationCard(onScan: () -> Unit, modifier: Modifier = Mod
         shape = shape,
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
     ) {
-        Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(40.dp).background(StudioMint, androidx.compose.foundation.shape.RoundedCornerShape(9.dp)), contentAlignment = Alignment.Center) {
-                Text("◎", style = MaterialTheme.typography.headlineSmall, color = StudioTeal, fontWeight = FontWeight.Bold)
+        BoxWithConstraints(Modifier.fillMaxWidth().padding(12.dp)) {
+            val stackButton = maxWidth < 430.dp
+            if (stackButton) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(40.dp).background(StudioMint, androidx.compose.foundation.shape.RoundedCornerShape(9.dp)), contentAlignment = Alignment.Center) {
+                            Text("◎", style = MaterialTheme.typography.headlineSmall, color = StudioTeal, fontWeight = FontWeight.Bold)
+                        }
+                        Spacer(Modifier.size(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("도료 사진 AI 등록", style = MaterialTheme.typography.titleMedium, color = StudioNavy)
+                            Text("라벨을 촬영하면 GPT-5.6이 브랜드·코드·색상을 초안으로 정리합니다.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    Button(
+                        onClick = onScan,
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = StudioTeal),
+                        shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
+                    ) { Text("촬영 등록") }
+                }
+            } else {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(40.dp).background(StudioMint, androidx.compose.foundation.shape.RoundedCornerShape(9.dp)), contentAlignment = Alignment.Center) {
+                        Text("◎", style = MaterialTheme.typography.headlineSmall, color = StudioTeal, fontWeight = FontWeight.Bold)
+                    }
+                    Spacer(Modifier.size(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("도료 사진 AI 등록", style = MaterialTheme.typography.titleMedium, color = StudioNavy)
+                        Text("라벨을 촬영하면 GPT-5.6이 브랜드·코드·색상을 초안으로 정리합니다.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Spacer(Modifier.size(10.dp))
+                    Button(
+                        onClick = onScan,
+                        modifier = Modifier.heightIn(min = 48.dp),
+                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = StudioTeal),
+                        shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 13.dp, vertical = 10.dp),
+                    ) { Text("촬영 등록", maxLines = 2, softWrap = true, textAlign = TextAlign.Center) }
+                }
             }
-            Spacer(Modifier.size(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text("도료 사진 AI 등록", style = MaterialTheme.typography.titleMedium, color = StudioNavy)
-                Text("라벨을 촬영하면 GPT-5.6이 브랜드·코드·색상을 초안으로 정리합니다.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            Spacer(Modifier.size(10.dp))
-            Button(
-                onClick = onScan,
-                modifier = Modifier.height(48.dp),
-                colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = StudioTeal),
-                shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
-                contentPadding = PaddingValues(horizontal = 13.dp),
-            ) { Text("촬영 등록") }
         }
     }
 }
@@ -568,10 +593,48 @@ private fun QuickActionsCard(
     ) {
         Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("QUICK ACTION", style = MaterialTheme.typography.labelMedium, color = StudioTeal, fontWeight = FontWeight.Bold)
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                Button(onClick = onNewMix, modifier = Modifier.weight(1f).height(48.dp), shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp), contentPadding = PaddingValues(horizontal = 6.dp)) { Text("새 조색") }
-                OutlinedButton(onClick = onAddPaint, modifier = Modifier.weight(1f).height(48.dp), shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp), contentPadding = PaddingValues(horizontal = 6.dp)) { Text("도료 추가") }
-                OutlinedButton(onClick = onNewProject, modifier = Modifier.weight(1f).height(48.dp), shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp), contentPadding = PaddingValues(horizontal = 6.dp)) { Text("AI 프로젝트") }
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                val buttonModifier = Modifier.heightIn(min = 48.dp)
+                val buttonPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp)
+                if (maxWidth < 330.dp) {
+                    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                        Button(onClick = onNewMix, modifier = buttonModifier.fillMaxWidth(), shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp), contentPadding = buttonPadding) {
+                            Text("새 조색", maxLines = 2, softWrap = true, textAlign = TextAlign.Center)
+                        }
+                        OutlinedButton(onClick = onAddPaint, modifier = buttonModifier.fillMaxWidth(), shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp), contentPadding = buttonPadding) {
+                            Text("도료 추가", maxLines = 2, softWrap = true, textAlign = TextAlign.Center)
+                        }
+                        OutlinedButton(onClick = onNewProject, modifier = buttonModifier.fillMaxWidth(), shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp), contentPadding = buttonPadding) {
+                            Text("AI 프로젝트", maxLines = 2, softWrap = true, textAlign = TextAlign.Center)
+                        }
+                    }
+                } else if (maxWidth < 560.dp) {
+                    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                            Button(onClick = onNewMix, modifier = buttonModifier.weight(1f), shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp), contentPadding = buttonPadding) {
+                                Text("새 조색", maxLines = 2, softWrap = true, textAlign = TextAlign.Center)
+                            }
+                            OutlinedButton(onClick = onAddPaint, modifier = buttonModifier.weight(1f), shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp), contentPadding = buttonPadding) {
+                                Text("도료 추가", maxLines = 2, softWrap = true, textAlign = TextAlign.Center)
+                            }
+                        }
+                        OutlinedButton(onClick = onNewProject, modifier = buttonModifier.fillMaxWidth(), shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp), contentPadding = buttonPadding) {
+                            Text("AI 프로젝트", maxLines = 2, softWrap = true, textAlign = TextAlign.Center)
+                        }
+                    }
+                } else {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                        Button(onClick = onNewMix, modifier = buttonModifier.weight(1f), shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp), contentPadding = buttonPadding) {
+                            Text("새 조색", maxLines = 2, softWrap = true, textAlign = TextAlign.Center)
+                        }
+                        OutlinedButton(onClick = onAddPaint, modifier = buttonModifier.weight(1f), shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp), contentPadding = buttonPadding) {
+                            Text("도료 추가", maxLines = 2, softWrap = true, textAlign = TextAlign.Center)
+                        }
+                        OutlinedButton(onClick = onNewProject, modifier = buttonModifier.weight(1f), shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp), contentPadding = buttonPadding) {
+                            Text("AI 프로젝트", maxLines = 2, softWrap = true, textAlign = TextAlign.Center)
+                        }
+                    }
+                }
             }
         }
     }

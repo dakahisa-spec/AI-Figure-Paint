@@ -2,4 +2,6 @@
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <cache-path name="paint_scan" path="paint_scan/" />
     <cache-path name="project_scan" path="project_scan/" />
+    <cache-path name="parts_compare" path="parts_compare/" />
+    <cache-path name="original_color_match" path="original_color_match/" />
 </paths>
